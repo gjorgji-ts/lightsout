@@ -94,7 +94,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ steps.app-token.outputs.token }}
+          password: ${{ secrets.GHCR_PAT }}
 
       - name: Run GoReleaser
         if: steps.check.outputs.skip == 'false'
@@ -103,7 +103,7 @@ jobs:
           version: "~> v2"
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ secrets.GHCR_PAT }}
           REGISTRY: ghcr.io
           IMAGE_NAME: ${{ github.repository }}
           GORELEASER_CURRENT_TAG: "v${{ steps.version.outputs.version }}"
@@ -113,7 +113,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           ACTOR: ${{ github.actor }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          TOKEN: ${{ secrets.GHCR_PAT }}
           OWNER: ${{ github.repository_owner }}
         run: |
           CHART_NAME=lightsout
@@ -122,7 +122,7 @@ jobs:
 
           helm registry login ghcr.io \
             --username "$ACTOR" \
-            --password "$APP_TOKEN"
+            --password "$TOKEN"
 
           helm push ./$CHART_NAME-$VERSION.tgz \
             "oci://ghcr.io/$OWNER/charts"
@@ -137,9 +137,9 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           OWNER: ${{ github.repository_owner }}
           ACTOR: ${{ github.actor }}
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          TOKEN: ${{ secrets.GHCR_PAT }}
         run: |
           crane auth login ghcr.io \
             --username "$ACTOR" \
-            --password "$APP_TOKEN"
+            --password "$TOKEN"
           crane tag "ghcr.io/$OWNER/charts/lightsout:$VERSION" latest
