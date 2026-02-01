@@ -7,7 +7,7 @@ CERT_MANAGER_VERSION="v1.19.1"
 SCRIPT_DIR_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LIGHTSOUT_CHART_OCI="oci://ghcr.io/gjorgji-ts/charts/lightsout"
 LIGHTSOUT_CHART_LOCAL="$SCRIPT_DIR_ROOT/charts/lightsout"
-LIGHTSOUT_CHART="${LIGHTSOUT_CHART:-}"
+LIGHTSOUT_IMAGE="ghcr.io/gjorgji-ts/lightsout:latest"
 GRAFANA_PASSWORD="$(openssl rand -base64 12)"
 
 # Colors
@@ -35,6 +35,25 @@ check_prerequisites() {
 }
 
 cmd_up() {
+    local source="remote"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --source)
+                source="$2"
+                shift 2
+                ;;
+            *)
+                err "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+    if [[ "$source" != "local" && "$source" != "remote" ]]; then
+        err "Invalid --source value: $source (must be 'local' or 'remote')"
+        exit 1
+    fi
+    log "Source mode: $source"
+
     check_prerequisites
 
     # Create Kind cluster
@@ -69,27 +88,24 @@ cmd_up() {
     log "Deploying Grafana dashboards..."
     kubectl apply -f "$SCRIPT_DIR/manifests/grafana-dashboards.yaml"
 
-    # Resolve LightsOut Helm chart (OCI registry → local fallback)
-    if [[ -n "$LIGHTSOUT_CHART" ]]; then
-        log "Using chart from LIGHTSOUT_CHART=$LIGHTSOUT_CHART"
-    elif helm show chart "$LIGHTSOUT_CHART_OCI" &>/dev/null; then
+    # Resolve chart and image based on source mode
+    if [[ "$source" == "remote" ]]; then
+        log "Using chart from OCI registry: $LIGHTSOUT_CHART_OCI"
         LIGHTSOUT_CHART="$LIGHTSOUT_CHART_OCI"
-        log "Using chart from OCI registry: $LIGHTSOUT_CHART"
-    else
-        LIGHTSOUT_CHART="$LIGHTSOUT_CHART_LOCAL"
-        warn "OCI chart not available, using local chart: $LIGHTSOUT_CHART"
-    fi
 
-    # Prepare LightsOut operator image (registry → local build fallback)
-    local img="ghcr.io/gjorgji-ts/lightsout:latest"
-    if docker pull "$img" 2>/dev/null; then
-        log "Pulled image from registry: $img"
+        log "Pulling image directly into Kind node: $LIGHTSOUT_IMAGE"
+        local node="${CLUSTER_NAME}-control-plane"
+        local platform="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+        docker exec "$node" ctr --namespace=k8s.io images pull --platform "$platform" "$LIGHTSOUT_IMAGE"
     else
-        warn "Remote image not available, building locally..."
-        make -C "$SCRIPT_DIR_ROOT" docker-build IMG="$img"
+        log "Using local chart: $LIGHTSOUT_CHART_LOCAL"
+        LIGHTSOUT_CHART="$LIGHTSOUT_CHART_LOCAL"
+
+        log "Building image locally: $LIGHTSOUT_IMAGE"
+        make -C "$SCRIPT_DIR_ROOT" docker-build IMG="$LIGHTSOUT_IMAGE"
+        log "Loading image into Kind cluster..."
+        kind load docker-image "$LIGHTSOUT_IMAGE" --name "$CLUSTER_NAME"
     fi
-    log "Loading image into Kind cluster..."
-    kind load docker-image "$img" --name "$CLUSTER_NAME"
 
     # Install LightsOut operator
     log "Installing LightsOut operator..."
@@ -169,13 +185,16 @@ cmd_status() {
 }
 
 case "${1:-help}" in
-    up)     cmd_up ;;
+    up)     shift; cmd_up "$@" ;;
     down)   cmd_down ;;
     status) cmd_status ;;
     *)
-        echo "Usage: $0 {up|down|status}"
+        echo "Usage: $0 {up|down|status} [options]"
         echo ""
-        echo "  up      Create Kind cluster and deploy full demo environment"
+        echo "  up [--source local|remote]"
+        echo "          Create Kind cluster and deploy full demo environment"
+        echo "          --source local   Build image and use chart from source"
+        echo "          --source remote  Pull image and chart from ghcr.io (default)"
         echo "  down    Tear down the Kind cluster"
         echo "  status  Show schedule and workload state"
         exit 1
