@@ -1,0 +1,32 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "lightsout.fullname" . }}
+  labels:
+    {{- include "lightsout.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "lightsout.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "lightsout.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "lightsout.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lightsout.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "lightsout.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "lightsout.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

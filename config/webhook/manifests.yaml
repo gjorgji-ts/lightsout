@@ -1,0 +1,52 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-lightsout-techsupport-mk-v1alpha1-lightsoutschedule
+  failurePolicy: Fail
+  name: mlightsoutschedule.kb.io
+  rules:
+  - apiGroups:
+    - lightsout.techsupport.mk
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - lightsoutschedules
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-lightsout-techsupport-mk-v1alpha1-lightsoutschedule
+  failurePolicy: Fail
+  name: vlightsoutschedule.kb.io
+  rules:
+  - apiGroups:
+    - lightsout.techsupport.mk
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - lightsoutschedules
+  sideEffects: None

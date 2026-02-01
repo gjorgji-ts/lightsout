@@ -1,0 +1,82 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - make generate
+    - make manifests
+    - >-
+      sed -i
+      -e "s/^version:.*/version: {{ .Version }}/"
+      -e "s/^appVersion:.*/appVersion: {{ .Version }}/"
+      charts/lightsout/Chart.yaml
+
+builds:
+  - id: operator
+    main: ./cmd/main.go
+    binary: manager
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.FullCommit}}
+      - -X main.date={{.CommitDate}}
+
+archives:
+  - id: operator
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: ["tar.gz"]
+    files:
+      - LICENSE
+      - README.md
+      - config/crd/bases/*
+      - config/rbac/*
+
+# Modern multi-arch Docker with dockers_v2
+dockers_v2:
+  - images:
+      - "{{ .Env.REGISTRY }}/{{ .Env.IMAGE_NAME }}"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    labels:
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.title": "{{.ProjectName}}"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.source": "https://github.com/gjorgji-ts/lightsout"
+    dockerfile: Dockerfile
+
+release:
+  github:
+    owner: gjorgji-ts
+    name: lightsout
+
+# Artifact signing
+signs:
+  - cmd: cosign
+    signature: "${artifact}.bundle"
+    artifacts: checksum
+    args:
+      - "sign-blob"
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+
+# SBOM generation
+sboms:
+  - artifacts: archive
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

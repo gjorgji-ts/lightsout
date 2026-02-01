@@ -1,0 +1,27 @@
+{{- if and .Values.webhook.enabled .Values.certManager.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "lightsout.fullname" . }}-selfsigned
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lightsout.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "lightsout.webhookCertSecret" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lightsout.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "lightsout.webhookCertSecret" . }}
+  dnsNames:
+    - {{ include "lightsout.webhookServiceName" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "lightsout.webhookServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: {{ include "lightsout.fullname" . }}-selfsigned
+{{- end }}

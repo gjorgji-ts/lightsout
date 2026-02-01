@@ -1,0 +1,19 @@
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: rate-limited-schedule
+spec:
+  upscale: "0 6 * * 1-5"
+  downscale: "0 18 * * 1-5"
+  timezone: "America/New_York"
+  namespaceSelector:
+    matchLabels:
+      environment: dev
+  # Scale up slowly to avoid resource pressure
+  upscaleRateLimit:
+    batchSize: 10
+    delayBetweenBatches: 5s
+  # Scale down faster since it's less disruptive
+  downscaleRateLimit:
+    batchSize: 50
+    delayBetweenBatches: 1s
