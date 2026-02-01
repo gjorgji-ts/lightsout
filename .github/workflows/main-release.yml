@@ -23,6 +23,8 @@ jobs:
   release:
     needs: [build-test-lint, codeql]
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # for cosign keyless signing
 
     steps:
       - uses: actions/create-github-app-token@v2
