@@ -1,0 +1,75 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "lightsout.fullname" . }}-mutating
+  labels:
+    {{- include "lightsout.labels" . | nindent 4 }}
+  {{- if .Values.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "lightsout.webhookCertSecret" . }}
+  {{- end }}
+webhooks:
+  - name: mlightsoutschedule.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "lightsout.webhookServiceName" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-lightsout-techsupport-mk-v1alpha1-lightsoutschedule
+        port: 443
+      {{- if not .Values.certManager.enabled }}
+      caBundle: {{ .Values.webhook.caBundle | default "" | quote }}
+      {{- end }}
+    failurePolicy: Fail
+    rules:
+      - apiGroups:
+          - lightsout.techsupport.mk
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - lightsoutschedules
+        scope: Cluster
+    sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "lightsout.fullname" . }}-validating
+  labels:
+    {{- include "lightsout.labels" . | nindent 4 }}
+  {{- if .Values.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "lightsout.webhookCertSecret" . }}
+  {{- end }}
+webhooks:
+  - name: vlightsoutschedule.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: {{ include "lightsout.webhookServiceName" . }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate-lightsout-techsupport-mk-v1alpha1-lightsoutschedule
+        port: 443
+      {{- if not .Values.certManager.enabled }}
+      caBundle: {{ .Values.webhook.caBundle | default "" | quote }}
+      {{- end }}
+    failurePolicy: Fail
+    rules:
+      - apiGroups:
+          - lightsout.techsupport.mk
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - lightsoutschedules
+        scope: Cluster
+    sideEffects: None
+{{- end }}

@@ -1,0 +1,143 @@
+name: Main - Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+jobs:
+  build-test-lint:
+    uses: ./.github/workflows/build-test-lint.yml
+    permissions:
+      contents: read
+
+  codeql:
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+  release:
+    needs: [build-test-lint, codeql]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Calculate version
+        id: version
+        uses: PaulHatch/semantic-version@v6.0.1
+        with:
+          tag_prefix: "v"
+          major_pattern: "/!:|BREAKING CHANGE:/"
+          minor_pattern: "/feat(\\(.+\\))?:/"
+          version_format: "${major}.${minor}.${patch}"
+
+      - name: Check if version changed
+        id: check
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag
+        if: steps.check.outputs.skip == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          git tag "v${VERSION}"
+          git push "https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git" "v${VERSION}"
+
+      - uses: actions/setup-go@v6
+        if: steps.check.outputs.skip == 'false'
+        with:
+          go-version-file: "go.mod"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.check.outputs.skip == 'false'
+      - uses: docker/setup-buildx-action@v3
+        if: steps.check.outputs.skip == 'false'
+
+      - uses: sigstore/cosign-installer@v4.0.0
+        if: steps.check.outputs.skip == 'false'
+      - name: Install Syft
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Login to GHCR
+        if: steps.check.outputs.skip == 'false'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ steps.app-token.outputs.token }}
+
+      - name: Run GoReleaser
+        if: steps.check.outputs.skip == 'false'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          REGISTRY: ghcr.io
+          IMAGE_NAME: ${{ github.repository }}
+          GORELEASER_CURRENT_TAG: "v${{ steps.version.outputs.version }}"
+
+      - name: Package and Push Helm Chart
+        if: steps.check.outputs.skip == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ACTOR: ${{ github.actor }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          CHART_NAME=lightsout
+
+          helm package ./charts/$CHART_NAME --version "$VERSION"
+
+          helm registry login ghcr.io \
+            --username "$ACTOR" \
+            --password "$APP_TOKEN"
+
+          helm push ./$CHART_NAME-$VERSION.tgz \
+            "oci://ghcr.io/$OWNER/charts"
+
+      - name: Install crane
+        if: steps.check.outputs.skip == 'false'
+        run: go install github.com/google/go-containerregistry/cmd/crane@latest
+
+      - name: Tag Helm Chart as latest
+        if: steps.check.outputs.skip == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+          ACTOR: ${{ github.actor }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          crane auth login ghcr.io \
+            --username "$ACTOR" \
+            --password "$APP_TOKEN"
+          crane tag "ghcr.io/$OWNER/charts/lightsout:$VERSION" latest

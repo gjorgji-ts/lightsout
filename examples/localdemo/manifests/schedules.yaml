@@ -1,0 +1,11 @@
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: demo-schedule
+spec:
+  upscale: "*/6 * * * *"
+  downscale: "3-59/6 * * * *"
+  timezone: "UTC"
+  namespaces:
+    - team-frontend
+    - team-backend

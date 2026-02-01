@@ -1,0 +1,77 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/gjorgji-ts/lightsout
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to appVersion
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: true
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+metrics:
+  enabled: true
+  port: 8080
+  secure: true
+
+healthProbe:
+  port: 8081
+
+leaderElection:
+  enabled: true
+
+# -- Webhook configuration for admission validation
+webhook:
+  # -- Enable admission webhooks (validates LightsOutSchedule resources)
+  enabled: true
+  # -- Webhook server port
+  port: 9443
+  # -- Path where TLS certs are mounted
+  certPath: "/tmp/k8s-webhook-server/serving-certs"
+  # -- TLS certificate filename
+  certName: "tls.crt"
+  # -- TLS key filename
+  keyName: "tls.key"
+  # -- Base64-encoded CA bundle for webhook (required when certManager.enabled=false)
+  caBundle: ""
+
+# -- cert-manager integration for automatic TLS certificate management
+# -- Only used when webhook.enabled=true
+certManager:
+  # -- Use cert-manager to generate webhook certificates
+  # -- If false, you must create a TLS Secret manually
+  enabled: true

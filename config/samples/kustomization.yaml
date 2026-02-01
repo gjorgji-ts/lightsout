@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- lightsout_v1alpha1_lightsoutschedule.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

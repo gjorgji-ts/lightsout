@@ -1,0 +1,14 @@
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  labels:
+    app.kubernetes.io/name: lightsout
+    app.kubernetes.io/managed-by: kustomize
+  name: lightsoutschedule-sample
+spec:
+  upscale: "0 6 * * 1-5"
+  downscale: "0 18 * * 1-5"
+  timezone: "America/New_York"
+  namespaceSelector:
+    matchLabels:
+      environment: dev

@@ -1,0 +1,16 @@
+apiVersion: v2
+name: lightsout
+description: A Kubernetes operator for automatic workload scaling during off-hours
+type: application
+version: 0.1.0
+appVersion: 0.1.0
+home: https://github.com/gjorgji-ts/lightsout
+sources:
+  - https://github.com/gjorgji-ts/lightsout
+keywords:
+  - kubernetes
+  - operator
+  - scaling
+  - cost-optimization
+maintainers:
+  - name: gjorgji-ts

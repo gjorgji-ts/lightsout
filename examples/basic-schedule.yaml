@@ -1,0 +1,13 @@
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: dev-weekday-hours
+spec:
+  upscale: "0 6 * * 1-5"      # 6 AM Monday-Friday
+  downscale: "0 18 * * 1-5"   # 6 PM Monday-Friday
+  timezone: "America/New_York"
+  namespaceSelector:
+    matchLabels:
+      environment: dev
+  excludeNamespaces:
+    - dev-critical
