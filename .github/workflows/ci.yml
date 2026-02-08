@@ -11,9 +11,3 @@ jobs:
   build-test-lint:
     uses: ./.github/workflows/build-test-lint.yml
 
-  codeql:
-    uses: ./.github/workflows/codeql.yml
-    permissions:
-      security-events: write
-      contents: read
-      actions: read

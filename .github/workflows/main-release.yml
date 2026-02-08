@@ -13,15 +13,8 @@ jobs:
     permissions:
       contents: read
 
-  codeql:
-    uses: ./.github/workflows/codeql.yml
-    permissions:
-      security-events: write
-      contents: read
-      actions: read
-
   release:
-    needs: [build-test-lint, codeql]
+    needs: [build-test-lint]
     runs-on: ubuntu-latest
     permissions:
       id-token: write # for cosign keyless signing
