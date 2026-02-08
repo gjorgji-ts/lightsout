@@ -16,7 +16,7 @@ The core loop is:
 4. It discovers which namespaces and workloads are in scope
 5. It scales workloads accordingly, storing original state in annotations
 6. It updates the schedule's status with current state and next transition times
-7. It re-queues itself to reconcile again at the next transition time
+7. It re-queues itself to reconcile again at the next transition time (or sooner if rate-limited batch processing is in progress)
 
 ## Component Map
 
@@ -27,9 +27,8 @@ flowchart TD
     R --> ND["Namespace Discovery"]
     PC -->|"current state + next transition"| R
     ND -->|"target namespaces"| R
-    R --> WS["Workload Scaler"]
-    WS --> RL["Rate Limiter / Batcher"]
-    RL -->|"batched scaling"| K8s["Kubernetes API<br/>(Deployments, StatefulSets, CronJobs)"]
+    R --> WS["Workload Scaler<br/>(budget-based rate limiting)"]
+    WS -->|"scale operations"| K8s["Kubernetes API<br/>(Deployments, StatefulSets, CronJobs)"]
     WS -->|"store/restore state"| Ann["Annotations<br/>original-replicas<br/>managed-by"]
     R -->|"emit"| Ev["Kubernetes Events"]
     R -->|"expose"| Met["Prometheus Metrics"]
@@ -47,9 +46,9 @@ The central controller loop (`internal/controller/lightsoutschedule_controller.g
 - Delegates to Namespace Discovery to find target namespaces
 - Collects workloads (Deployments, StatefulSets, CronJobs) across those namespaces
 - Filters out excluded workloads via `excludeLabels`
-- Delegates to the Workload Scaler for actual scaling
+- Delegates to the Workload Scaler for actual scaling (with budget-based rate limiting when configured)
 - Updates the schedule's status and conditions
-- Re-queues for the next transition time
+- Re-queues for the next transition time, or sooner if a batch limit was reached
 
 A finalizer (`lightsout.techsupport.mk/cleanup`) ensures that when a schedule is deleted, all managed workloads are restored to their original state before the resource is removed.
 
@@ -85,9 +84,11 @@ Key design properties:
 - **Respects user intent** — if a user manually scales a workload while it's managed, LightsOut tracks this and won't overwrite user changes.
 - **Managed-by tracking** — each workload is annotated with the schedule name that manages it, preventing conflicts between schedules.
 
-### Rate Limiter / Batcher
+### Rate Limiting
 
-Prevents resource spikes during bulk scaling (`internal/controller/batcher.go`). When rate limiting is configured, workloads are processed in configurable batches with a delay between each batch. This is useful when scaling hundreds of workloads simultaneously could overwhelm the cluster.
+Prevents resource spikes during bulk scaling. When rate limiting is configured (`batchSize` and optional `delayBetweenBatches`), the reconciler uses a **non-blocking budget-based approach**: it processes up to `batchSize` actual scale operations per reconciliation cycle, then returns early and requeues itself after the configured delay. On the next reconcile, it re-lists workloads and continues — already-processed workloads are skipped cheaply via their annotations without consuming budget.
+
+This design keeps the controller responsive during large-scale operations. Spec changes, suspension, deletion, and period transitions (e.g., an upscale time arriving mid-downscale) are all picked up on the next requeue rather than being blocked until all batches finish. The requeue delay is `min(delayBetweenBatches, timeUntilNextTransition)` to ensure period transitions are never missed.
 
 ## Key Design Decisions
 
