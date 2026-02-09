@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,9 +32,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 	"github.com/gjorgji-ts/lightsout/internal/constants"
@@ -207,9 +210,9 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Calculate requeue time
 	var timeUntilNextTransition time.Duration
 	if scaleUp {
-		timeUntilNextTransition = time.Until(period.NextDownscale)
+		timeUntilNextTransition = period.NextDownscale.Sub(now)
 	} else {
-		timeUntilNextTransition = time.Until(period.NextUpscale)
+		timeUntilNextTransition = period.NextUpscale.Sub(now)
 	}
 
 	var requeueAfter time.Duration
@@ -223,13 +226,12 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 				requeueAfter = delay
 			}
 		}
+		// Small floor to prevent zero/negative from stalling the batch
+		requeueAfter = max(requeueAfter, time.Second)
 	} else {
 		requeueAfter = timeUntilNextTransition
-	}
-
-	// Ensure minimum requeue time of 1 minute
-	if requeueAfter < time.Minute {
-		requeueAfter = time.Minute
+		// Defensive floor for the idle path — next transition is typically hours away
+		requeueAfter = max(requeueAfter, time.Minute)
 	}
 
 	logger.Info("reconciliation complete", "requeueAfter", requeueAfter, "batchLimitReached", scaleResult.batchLimitReached)
@@ -495,12 +497,7 @@ func shouldProcessWorkloadType(types []lightsoutv1alpha1.WorkloadType, target li
 	if len(types) == 0 {
 		return true // Process all types if none specified
 	}
-	for _, t := range types {
-		if t == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(types, target)
 }
 
 // handleDeletion restores all managed workloads to their original state before allowing deletion
@@ -624,7 +621,8 @@ func (r *LightsOutScheduleReconciler) listManagedCronJobs(ctx context.Context, n
 func (r *LightsOutScheduleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorder("lightsout-controller")
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&lightsoutv1alpha1.LightsOutSchedule{}).
+		For(&lightsoutv1alpha1.LightsOutSchedule{},
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("lightsoutschedule").
 		Complete(r)
 }

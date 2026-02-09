@@ -48,11 +48,11 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
 	// Create 5 deployments
-	var objects []client.Object
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-ns", Labels: map[string]string{"env": "test"}}}
+	objects := make([]client.Object, 0, 6)
 	objects = append(objects, ns)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "test-ns"},
 			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
@@ -104,7 +104,7 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 	// Reconcile 2: scales 2, returns batchLimitReached
 	// Reconcile 3: scales 2, returns batchLimitReached
 	// Reconcile 4: scales 1, all done
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err = r.Reconcile(context.Background(), ctrl.Request{
 			NamespacedName: client.ObjectKey{Name: "test-schedule"},
 		})
@@ -173,8 +173,8 @@ func TestScaleWorkloads_BatchLimitReached(t *testing.T) {
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
 	// Create 5 deployments
-	var objects []client.Object
-	for i := 0; i < 5; i++ {
+	objects := make([]client.Object, 0, 5)
+	for i := range 5 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "ns1"},
 			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
@@ -293,8 +293,8 @@ func TestScaleWorkloads_NoRateLimitProcessesAll(t *testing.T) {
 	_ = batchv1.AddToScheme(scheme)
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
-	var objects []client.Object
-	for i := 0; i < 10; i++ {
+	objects := make([]client.Object, 0, 10)
+	for i := range 10 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "ns1"},
 			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
@@ -339,11 +339,11 @@ func TestReconcile_RequeueDelayIsMinOfBatchDelayAndTransition(t *testing.T) {
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
 	// Create enough deployments to trigger batch limit
-	var objects []client.Object
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-ns-requeue", Labels: map[string]string{"env": "requeue"}}}
+	objects := make([]client.Object, 0, 6)
 	objects = append(objects, ns)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "test-ns-requeue"},
 			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
@@ -401,9 +401,9 @@ func TestReconcile_RequeueDelayIsMinOfBatchDelayAndTransition(t *testing.T) {
 	}
 
 	// With batch delay of 30s and next transition ~11 hours away,
-	// requeue should be 1 minute (minimum, since 30s < 1m minimum)
-	if result.RequeueAfter != time.Minute {
-		t.Errorf("expected requeue after 1m (minimum), got %v", result.RequeueAfter)
+	// requeue should be 30s (batch path uses 1s floor, not the 1m idle floor)
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("expected requeue after 30s (batch delay), got %v", result.RequeueAfter)
 	}
 }
 
@@ -2087,7 +2087,7 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 			}
 
 			// Rapid reconciliations (10 times)
-			for i := 0; i < 10; i++ {
+			for range 10 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: "test-schedule-rapid"},
 				})
