@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,9 +32,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 	"github.com/gjorgji-ts/lightsout/internal/constants"
@@ -132,7 +135,15 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Process workloads
 	scaleUp := period.State == "Up"
 
-	// Scale all workloads (handles collection, batching, and metrics)
+	// Get rate limit config for requeue calculation
+	var rateLimit *lightsoutv1alpha1.RateLimitConfig
+	if scaleUp {
+		rateLimit = schedule.Spec.UpscaleRateLimit
+	} else {
+		rateLimit = schedule.Spec.DownscaleRateLimit
+	}
+
+	// Scale all workloads (handles collection, budget-based processing, and metrics)
 	scaleResult, err := r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp)
 	if err != nil {
 		logger.Error(err, "failed to scale workloads")
@@ -196,43 +207,55 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	LastReconcileTime.WithLabelValues(schedule.Name).SetToCurrentTime()
 
-	// Calculate requeue time (next transition)
-	var requeueAfter time.Duration
+	// Calculate requeue time
+	var timeUntilNextTransition time.Duration
 	if scaleUp {
-		requeueAfter = time.Until(period.NextDownscale)
+		timeUntilNextTransition = period.NextDownscale.Sub(now)
 	} else {
-		requeueAfter = time.Until(period.NextUpscale)
+		timeUntilNextTransition = period.NextUpscale.Sub(now)
 	}
 
-	// Ensure minimum requeue time of 1 minute
-	if requeueAfter < time.Minute {
-		requeueAfter = time.Minute
+	var requeueAfter time.Duration
+	if scaleResult.batchLimitReached {
+		// More workloads to process — requeue after batch delay, but not later
+		// than the next period transition (so we don't miss direction changes).
+		requeueAfter = timeUntilNextTransition
+		if rateLimit != nil && rateLimit.DelayBetweenBatches != nil {
+			delay := rateLimit.DelayBetweenBatches.Duration
+			if delay < requeueAfter {
+				requeueAfter = delay
+			}
+		}
+		// Small floor to prevent zero/negative from stalling the batch
+		requeueAfter = max(requeueAfter, time.Second)
+	} else {
+		requeueAfter = timeUntilNextTransition
+		// Defensive floor for the idle path — next transition is typically hours away
+		requeueAfter = max(requeueAfter, time.Minute)
 	}
 
-	logger.Info("reconciliation complete", "requeueAfter", requeueAfter)
+	logger.Info("reconciliation complete", "requeueAfter", requeueAfter, "batchLimitReached", scaleResult.batchLimitReached)
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
-}
-
-// BatchResult contains the result of processing a batch of workloads
-type BatchResult struct {
-	Processed int
-	Failed    int
-	Skipped   int
 }
 
 // scaleWorkloadsResult contains the result of scaling all workloads
 type scaleWorkloadsResult struct {
-	stats          lightsoutv1alpha1.WorkloadStats
-	totalProcessed int
-	totalFailed    int
-	totalSkipped   int
+	stats             lightsoutv1alpha1.WorkloadStats
+	totalProcessed    int
+	totalFailed       int
+	totalSkipped      int
+	batchLimitReached bool
 }
 
-// scaleWorkloads handles the complete scaling workflow including:
-// - Collecting workloads from namespaces
-// - Batching and processing workloads
-// - Recording metrics
-// - Building stats
+// scaleWorkloads handles the complete scaling workflow using a budget-based
+// single-pass approach. Instead of chunking workloads into batches and blocking
+// between them, it processes workloads one by one with a budget. When the budget
+// is exhausted, it returns early with batchLimitReached=true so the caller can
+// requeue and yield control back to the controller framework.
+//
+// Skipped workloads (already at target state) do not consume budget, making
+// re-entry after requeue cheap — the reconciler naturally picks up where it
+// left off via annotation-based idempotency.
 func (r *LightsOutScheduleReconciler) scaleWorkloads(
 	ctx context.Context,
 	schedule *lightsoutv1alpha1.LightsOutSchedule,
@@ -255,32 +278,26 @@ func (r *LightsOutScheduleReconciler) scaleWorkloads(
 		rateLimit = schedule.Spec.DownscaleRateLimit
 	}
 
-	// Process workloads in batches
-	startTime := time.Now()
-	batches := ChunkWorkloads(workloads, rateLimit)
+	// Determine budget: unlimited (-1) if no rate limit, otherwise batchSize
+	budget := -1
+	if rateLimit != nil && rateLimit.BatchSize != nil && *rateLimit.BatchSize > 0 {
+		budget = *rateLimit.BatchSize
+	}
 
 	direction := "down"
 	if scaleUp {
 		direction = "up"
 	}
 
-	// Initialize scaling progress
-	if len(batches) > 0 && rateLimit != nil && rateLimit.BatchSize != nil {
-		schedule.Status.ScalingProgress = &lightsoutv1alpha1.ScalingProgress{
-			Total:      len(workloads),
-			InProgress: true,
-		}
-	}
-
 	var totalProcessed, totalFailed, totalSkipped int
-	for i, batch := range batches {
-		// Check for context cancellation between batches to enable graceful shutdown.
-		// Note: Partial scaling is safe because the system is idempotent - already-scaled
-		// workloads are skipped on the next reconciliation via annotation checks.
+	startTime := time.Now()
+
+	for i, w := range workloads {
+		// Check for context cancellation between workloads for faster shutdown response
 		select {
 		case <-ctx.Done():
-			logger.Info("context cancelled during batch processing, will resume on next reconcile",
-				"processedBatches", i, "totalBatches", len(batches))
+			logger.Info("context cancelled during workload processing, will resume on next reconcile",
+				"processed", totalProcessed, "total", len(workloads))
 			return &scaleWorkloadsResult{
 				stats:          r.buildStatsFromWorkloads(workloads, scaleUp),
 				totalProcessed: totalProcessed,
@@ -290,105 +307,82 @@ func (r *LightsOutScheduleReconciler) scaleWorkloads(
 		default:
 		}
 
-		batchResult := r.processBatch(ctx, batch, schedule.Name, scaleUp)
-		totalProcessed += batchResult.Processed
-		totalFailed += batchResult.Failed
-		totalSkipped += batchResult.Skipped
-
-		ScalingBatchesTotal.WithLabelValues(schedule.Name, direction).Inc()
-
-		// Update progress
-		if schedule.Status.ScalingProgress != nil {
-			schedule.Status.ScalingProgress.Completed = totalProcessed + totalSkipped
-			schedule.Status.ScalingProgress.Failed = totalFailed
-		}
-
-		// Delay between batches (except after last batch)
-		if i < len(batches)-1 && rateLimit != nil && rateLimit.DelayBetweenBatches != nil {
-			select {
-			case <-ctx.Done():
-				logger.Info("context cancelled during batch delay, will resume on next reconcile")
-				return &scaleWorkloadsResult{
-					stats:          r.buildStatsFromWorkloads(workloads, scaleUp),
-					totalProcessed: totalProcessed,
-					totalFailed:    totalFailed,
-					totalSkipped:   totalSkipped,
-				}, ctx.Err()
-			case <-time.After(rateLimit.DelayBetweenBatches.Duration):
-			}
-		}
-	}
-
-	// Record scaling duration
-	ScalingDurationSeconds.WithLabelValues(schedule.Name, direction).Observe(time.Since(startTime).Seconds())
-
-	// Clear scaling progress
-	schedule.Status.ScalingProgress = nil
-
-	// Build stats from processed workloads
-	stats := r.buildStatsFromWorkloads(workloads, scaleUp)
-
-	return &scaleWorkloadsResult{
-		stats:          stats,
-		totalProcessed: totalProcessed,
-		totalFailed:    totalFailed,
-		totalSkipped:   totalSkipped,
-	}, nil
-}
-
-// processBatch scales a batch of workloads and returns the result
-func (r *LightsOutScheduleReconciler) processBatch(ctx context.Context, batch []Workload, scheduleName string, scaleUp bool) BatchResult {
-	logger := log.FromContext(ctx)
-	result := BatchResult{}
-
-	direction := "down"
-	if scaleUp {
-		direction = "up"
-	}
-
-	for _, w := range batch {
-		// Check for context cancellation between workloads for faster shutdown response
-		select {
-		case <-ctx.Done():
-			logger.V(1).Info("context cancelled during workload processing")
-			return result
-		default:
-		}
-
 		var scaleResult *ScaleResult
-		var err error
+		var scaleErr error
 
 		switch w.Type {
 		case WorkloadTypeDeployment:
-			scaleResult, err = ScaleDeployment(ctx, r.Client, w.Deployment, scheduleName, scaleUp)
+			scaleResult, scaleErr = ScaleDeployment(ctx, r.Client, w.Deployment, schedule.Name, scaleUp)
 		case WorkloadTypeStatefulSet:
-			scaleResult, err = ScaleStatefulSet(ctx, r.Client, w.StatefulSet, scheduleName, scaleUp)
+			scaleResult, scaleErr = ScaleStatefulSet(ctx, r.Client, w.StatefulSet, schedule.Name, scaleUp)
 		case WorkloadTypeCronJob:
-			scaleResult, err = ScaleCronJob(ctx, r.Client, w.CronJob, scheduleName, scaleUp)
+			scaleResult, scaleErr = ScaleCronJob(ctx, r.Client, w.CronJob, schedule.Name, scaleUp)
 		}
 
-		if err != nil {
-			logger.Error(err, "failed to scale workload", "type", w.Type, "name", w.Name, "namespace", w.Namespace)
-			ScalingErrorsTotal.WithLabelValues(scheduleName, w.Namespace, string(w.Type)).Inc()
-			ScalingWorkloadsProcessed.WithLabelValues(scheduleName, direction, "failure").Inc()
-			result.Failed++
+		if scaleErr != nil {
+			logger.Error(scaleErr, "failed to scale workload", "type", w.Type, "name", w.Name, "namespace", w.Namespace)
+			ScalingErrorsTotal.WithLabelValues(schedule.Name, w.Namespace, string(w.Type)).Inc()
+			ScalingWorkloadsProcessed.WithLabelValues(schedule.Name, direction, "failure").Inc()
+			totalFailed++
 			continue
 		}
 
 		if scaleResult.Skipped {
-			result.Skipped++
-		} else {
-			operation := "downscale"
-			if scaleUp {
-				operation = "upscale"
+			totalSkipped++
+			continue
+		}
+
+		// Actual scale operation performed — consume budget
+		operation := "downscale"
+		if scaleUp {
+			operation = "upscale"
+		}
+		ScalingOperationsTotal.WithLabelValues(schedule.Name, w.Namespace, string(w.Type), operation).Inc()
+		ScalingWorkloadsProcessed.WithLabelValues(schedule.Name, direction, "success").Inc()
+		totalProcessed++
+
+		if budget > 0 {
+			budget--
+			if budget == 0 {
+				// Budget exhausted — check if more workloads remain
+				moreRemain := i < len(workloads)-1
+				if moreRemain {
+					ScalingBatchesTotal.WithLabelValues(schedule.Name, direction).Inc()
+					ScalingDurationSeconds.WithLabelValues(schedule.Name, direction).Observe(time.Since(startTime).Seconds())
+
+					// Set scaling progress
+					schedule.Status.ScalingProgress = &lightsoutv1alpha1.ScalingProgress{
+						Total:      len(workloads),
+						Completed:  totalProcessed + totalSkipped,
+						Failed:     totalFailed,
+						InProgress: true,
+					}
+
+					return &scaleWorkloadsResult{
+						stats:             r.buildStatsFromWorkloads(workloads, scaleUp),
+						totalProcessed:    totalProcessed,
+						totalFailed:       totalFailed,
+						totalSkipped:      totalSkipped,
+						batchLimitReached: true,
+					}, nil
+				}
 			}
-			ScalingOperationsTotal.WithLabelValues(scheduleName, w.Namespace, string(w.Type), operation).Inc()
-			ScalingWorkloadsProcessed.WithLabelValues(scheduleName, direction, "success").Inc()
-			result.Processed++
 		}
 	}
 
-	return result
+	// All workloads processed — record metrics and clear progress
+	ScalingDurationSeconds.WithLabelValues(schedule.Name, direction).Observe(time.Since(startTime).Seconds())
+	if totalProcessed > 0 {
+		ScalingBatchesTotal.WithLabelValues(schedule.Name, direction).Inc()
+	}
+	schedule.Status.ScalingProgress = nil
+
+	return &scaleWorkloadsResult{
+		stats:          r.buildStatsFromWorkloads(workloads, scaleUp),
+		totalProcessed: totalProcessed,
+		totalFailed:    totalFailed,
+		totalSkipped:   totalSkipped,
+	}, nil
 }
 
 // collectWorkloads gathers all workloads from the given namespaces
@@ -503,12 +497,7 @@ func shouldProcessWorkloadType(types []lightsoutv1alpha1.WorkloadType, target li
 	if len(types) == 0 {
 		return true // Process all types if none specified
 	}
-	for _, t := range types {
-		if t == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(types, target)
 }
 
 // handleDeletion restores all managed workloads to their original state before allowing deletion
@@ -632,7 +621,8 @@ func (r *LightsOutScheduleReconciler) listManagedCronJobs(ctx context.Context, n
 func (r *LightsOutScheduleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorder("lightsout-controller")
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&lightsoutv1alpha1.LightsOutSchedule{}).
+		For(&lightsoutv1alpha1.LightsOutSchedule{},
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("lightsoutschedule").
 		Complete(r)
 }

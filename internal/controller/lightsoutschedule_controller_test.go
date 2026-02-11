@@ -48,11 +48,11 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
 	// Create 5 deployments
-	var objects []client.Object
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-ns", Labels: map[string]string{"env": "test"}}}
+	objects := make([]client.Object, 0, 6)
 	objects = append(objects, ns)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "test-ns"},
 			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
@@ -91,6 +91,7 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 		},
 	}
 
+	// First reconcile adds finalizer
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: client.ObjectKey{Name: "test-schedule"},
 	})
@@ -98,12 +99,18 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 		t.Fatalf("reconcile failed: %v", err)
 	}
 
-	// Second reconcile to do the actual scaling (first one adds finalizer)
-	_, err = r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: client.ObjectKey{Name: "test-schedule"},
-	})
-	if err != nil {
-		t.Fatalf("reconcile failed: %v", err)
+	// With batchSize=2 and 5 deployments, we need multiple reconciles.
+	// Each reconcile processes at most 2 actual scale operations, then requeues.
+	// Reconcile 2: scales 2, returns batchLimitReached
+	// Reconcile 3: scales 2, returns batchLimitReached
+	// Reconcile 4: scales 1, all done
+	for i := range 3 {
+		_, err = r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: client.ObjectKey{Name: "test-schedule"},
+		})
+		if err != nil {
+			t.Fatalf("reconcile %d failed: %v", i+2, err)
+		}
 	}
 
 	// Verify all deployments were scaled down
@@ -159,19 +166,25 @@ func TestCollectWorkloads(t *testing.T) {
 	}
 }
 
-func TestProcessBatch(t *testing.T) {
+func TestScaleWorkloads_BatchLimitReached(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "deploy1", Namespace: "ns1"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	// Create 5 deployments
+	objects := make([]client.Object, 0, 5)
+	for i := range 5 {
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "ns1"},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		}
+		objects = append(objects, deploy)
 	}
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithObjects(deploy).
+		WithObjects(objects...).
 		Build()
 
 	r := &LightsOutScheduleReconciler{
@@ -179,20 +192,218 @@ func TestProcessBatch(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	batch := []Workload{WorkloadFromDeployment(deploy)}
-	result := r.processBatch(context.Background(), batch, "test-schedule", false)
-
-	if result.Processed != 1 {
-		t.Errorf("expected 1 processed, got %d", result.Processed)
+	batchSize := 2
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+				BatchSize: &batchSize,
+			},
+		},
 	}
 
-	// Verify deployment was scaled down
-	var updated appsv1.Deployment
-	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(deploy), &updated); err != nil {
-		t.Fatalf("failed to get deployment: %v", err)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if *updated.Spec.Replicas != 0 {
-		t.Errorf("expected 0 replicas, got %d", *updated.Spec.Replicas)
+
+	if !result.batchLimitReached {
+		t.Error("expected batchLimitReached=true, got false")
+	}
+	if result.totalProcessed != 2 {
+		t.Errorf("expected 2 processed, got %d", result.totalProcessed)
+	}
+}
+
+func TestScaleWorkloads_SkippedDontConsumeBudget(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	// Create 3 deployments: 2 already scaled down (will be skipped), 1 active.
+	// Names are chosen so that already-scaled come first alphabetically,
+	// ensuring they're iterated before the active one.
+	alreadyScaled1 := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "aaa-deploy-scaled-1", Namespace: "ns1",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "3",
+				constants.ManagedByAnnotation:        "test-schedule",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+	alreadyScaled2 := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "aab-deploy-scaled-2", Namespace: "ns1",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "2",
+				constants.ManagedByAnnotation:        "test-schedule",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+	active := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "zzz-deploy-active", Namespace: "ns1"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(5))},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(alreadyScaled1, alreadyScaled2, active).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	batchSize := 1
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+				BatchSize: &batchSize,
+			},
+		},
+	}
+
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With budget=1: the 2 skipped workloads don't consume budget,
+	// the 1 active workload consumes it. All workloads processed in one pass.
+	if result.batchLimitReached {
+		t.Error("expected batchLimitReached=false (skipped workloads shouldn't consume budget)")
+	}
+	if result.totalSkipped != 2 {
+		t.Errorf("expected 2 skipped, got %d", result.totalSkipped)
+	}
+	if result.totalProcessed != 1 {
+		t.Errorf("expected 1 processed, got %d", result.totalProcessed)
+	}
+}
+
+func TestScaleWorkloads_NoRateLimitProcessesAll(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	objects := make([]client.Object, 0, 10)
+	for i := range 10 {
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "ns1"},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		}
+		objects = append(objects, deploy)
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}
+
+	// No rate limit configured
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
+		Spec:       lightsoutv1alpha1.LightsOutScheduleSpec{},
+	}
+
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.batchLimitReached {
+		t.Error("expected batchLimitReached=false with no rate limit")
+	}
+	if result.totalProcessed != 10 {
+		t.Errorf("expected 10 processed, got %d", result.totalProcessed)
+	}
+}
+
+func TestReconcile_RequeueDelayIsMinOfBatchDelayAndTransition(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	// Create enough deployments to trigger batch limit
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-ns-requeue", Labels: map[string]string{"env": "requeue"}}}
+	objects := make([]client.Object, 0, 6)
+	objects = append(objects, ns)
+
+	for i := range 5 {
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "test-ns-requeue"},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		}
+		objects = append(objects, deploy)
+	}
+
+	batchSize := 2
+	delay := metav1.Duration{Duration: 30 * time.Second}
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule-requeue"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "requeue"},
+			},
+			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+				BatchSize:           &batchSize,
+				DelayBetweenBatches: &delay,
+			},
+		},
+	}
+	objects = append(objects, schedule)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			// 7 PM = downscale period. Next transition (upscale) is at 6 AM tomorrow = 11 hours away.
+			return time.Date(2025, 1, 15, 19, 0, 0, 0, time.UTC)
+		},
+	}
+
+	// First reconcile adds finalizer
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "test-schedule-requeue"},
+	})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// Second reconcile processes batch and should requeue with batch delay
+	result, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "test-schedule-requeue"},
+	})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// With batch delay of 30s and next transition ~11 hours away,
+	// requeue should be 30s (batch path uses 1s floor, not the 1m idle floor)
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("expected requeue after 30s (batch delay), got %v", result.RequeueAfter)
 	}
 }
 
@@ -1876,7 +2087,7 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 			}
 
 			// Rapid reconciliations (10 times)
-			for i := 0; i < 10; i++ {
+			for range 10 {
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: "test-schedule-rapid"},
 				})
