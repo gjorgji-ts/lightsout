@@ -11,6 +11,7 @@ No application changes required. Original replica counts are preserved and resto
 - **Flexible namespace targeting** — label selectors, explicit lists, and exclusions
 - **Rate-limited scaling** — batch workloads to avoid resource spikes
 - **Admission webhooks** — validates schedules and detects overlaps before they're applied
+- **ArgoCD integration** — optional labeling of ArgoCD Application CRDs to prevent false alerts during downscale
 - **Prometheus metrics** — observe schedule state, scaling operations, errors, and durations
 
 ## Quick Start
@@ -75,6 +76,7 @@ For a deeper look at the architecture, see [docs/architecture.md](docs/architect
 | `excludeLabels` | LabelSelector | No | Skip workloads matching these labels |
 | `upscaleRateLimit` | RateLimitConfig | No | Rate limit upscale operations |
 | `downscaleRateLimit` | RateLimitConfig | No | Rate limit downscale operations |
+| `argoCD` | ArgoCDConfig | No | Enable [ArgoCD integration](docs/argocd.md) |
 
 At least one of `namespaceSelector` or `namespaces` must be specified.
 
@@ -102,9 +104,21 @@ spec:
     delayBetweenBatches: "5s"
 ```
 
+### ArgoCD Integration
+
+If you use ArgoCD, enabling the `argoCD` field prevents ArgoCD from firing false "Degraded" or "OutOfSync" alerts when LightsOut scales workloads down:
+
+```yaml
+spec:
+  argoCD:
+    namespace: argocd    # optional, defaults to "argocd"
+```
+
+LightsOut labels ArgoCD Application CRDs with `lightsout.techsupport.mk/state: down` during downscale and removes the labels on upscale. See the [ArgoCD Integration Guide](docs/argocd.md) for details.
+
 ## Observability
 
-LightsOut exposes Prometheus metrics on the metrics port (default `8080`):
+LightsOut exposes Prometheus metrics on the metrics endpoint:
 
 | Metric | Type | Description |
 |--------|------|-------------|
@@ -113,6 +127,8 @@ LightsOut exposes Prometheus metrics on the metrics port (default `8080`):
 | `lightsout_scaling_operations_total` | Counter | Total scaling operations by schedule, namespace, type |
 | `lightsout_scaling_errors_total` | Counter | Total scaling errors |
 | `lightsout_managed_workloads` | Gauge | Number of workloads being managed |
+| `lightsout_scaling_batches_total` | Counter | Batches processed during scaling |
+| `lightsout_scaling_workloads_processed_total` | Counter | Workloads processed with success/failure result |
 | `lightsout_scaling_duration_seconds` | Histogram | Time taken for scaling operations |
 | `lightsout_last_reconcile_timestamp_seconds` | Gauge | Unix timestamp of last reconciliation |
 
@@ -121,6 +137,7 @@ Scaling events are also recorded as Kubernetes Events on the `LightsOutSchedule`
 ## Documentation
 
 - [Architecture](docs/architecture.md) — how LightsOut works internally
+- [ArgoCD Integration](docs/argocd.md) — prevent false alerts when scaling down
 - [Setup Guide](docs/setup-guide.md) — installation with and without webhooks
 - [Security Model](docs/security-model.md) — RBAC, risks, and mitigations
 - [Examples](examples/) — sample schedule configurations

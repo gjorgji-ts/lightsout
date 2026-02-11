@@ -13,6 +13,7 @@ The LightsOut controller requires **cluster-wide permissions** to modify workloa
 | CronJobs | batch | get, list, watch, patch, update | Suspend/unsuspend scheduled jobs |
 | Namespaces | core | get, list, watch | Discover namespaces for namespace selectors |
 | Events | core | create, patch | Record scaling events for observability |
+| Applications | argoproj.io | get, list, watch, update, patch | Label ArgoCD Application CRDs during scaling (optional) |
 
 #### Why Cluster-Wide Access?
 
@@ -26,6 +27,7 @@ LightsOut schedules can target workloads across multiple namespaces using label 
 
 **Risks:**
 - The controller has write access to all Deployments, StatefulSets, and CronJobs cluster-wide
+- When ArgoCD integration is enabled, the controller can modify labels on ArgoCD Application CRDs
 - A misconfigured schedule could inadvertently scale down production workloads
 - Compromised controller credentials could be used to disrupt services
 
@@ -39,6 +41,6 @@ LightsOut schedules can target workloads across multiple namespaces using label 
 
 **Best Practices:**
 1. Start with a narrow scope (specific namespace, specific labels) before expanding
-2. Use the `exclusions` field to protect critical workloads by date or permanently
+2. Use `excludeLabels` to protect critical workloads and `excludeNamespaces` to protect entire namespaces
 3. Test schedules in non-production environments first
 4. Set up alerts for scaling events in your monitoring stack

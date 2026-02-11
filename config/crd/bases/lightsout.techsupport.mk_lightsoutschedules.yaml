@@ -55,6 +55,17 @@ spec:
           spec:
             description: LightsOutScheduleSpec defines the desired state of LightsOutSchedule
             properties:
+              argoCD:
+                description: |-
+                  ArgoCD enables labeling of ArgoCD Application CRDs during scaling
+                  operations to signal downscale state. When nil (omitted), ArgoCD
+                  integration is disabled.
+                properties:
+                  namespace:
+                    default: argocd
+                    description: Namespace where ArgoCD Application CRDs live.
+                    type: string
+                type: object
               downscale:
                 description: Downscale is the cron expression for when to scale workloads
                   down

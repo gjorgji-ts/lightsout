@@ -29,7 +29,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -404,6 +406,292 @@ func TestReconcile_RequeueDelayIsMinOfBatchDelayAndTransition(t *testing.T) {
 	// requeue should be 30s (batch path uses 1s floor, not the 1m idle floor)
 	if result.RequeueAfter != 30*time.Second {
 		t.Errorf("expected requeue after 30s (batch delay), got %v", result.RequeueAfter)
+	}
+}
+
+func TestReconcile_ArgoCDDownscale(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+
+	// Create ArgoCD Application targeting the "dev" namespace
+	argoApp := newArgoCDApp("dev-app", "dev", nil)
+
+	// ArgoCD app targeting different namespace (should not be labeled)
+	argoAppOther := newArgoCDApp("prod-app", "prod", nil)
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, argoApp, argoAppOther, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			// 7 PM = downscale period (after 6 PM downscale)
+			return time.Date(2025, 1, 15, 19, 0, 0, 0, time.UTC)
+		},
+	}
+
+	// First reconcile adds finalizer
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "dev-schedule"},
+	})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// Second reconcile does the actual scaling
+	_, err = r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "dev-schedule"},
+	})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// Verify deployment was scaled down
+	var updatedDeploy appsv1.Deployment
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(deploy), &updatedDeploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	if *updatedDeploy.Spec.Replicas != 0 {
+		t.Errorf("deployment replicas = %d, want 0", *updatedDeploy.Spec.Replicas)
+	}
+
+	// Verify ArgoCD app targeting "dev" was labeled
+	var updatedApp unstructured.Unstructured
+	updatedApp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(argoApp), &updatedApp); err != nil {
+		t.Fatalf("failed to get ArgoCD app: %v", err)
+	}
+	labels := updatedApp.GetLabels()
+	if labels[constants.StateLabel] != constants.StateDown {
+		t.Errorf("ArgoCD app state label = %q, want %q", labels[constants.StateLabel], constants.StateDown)
+	}
+	if labels[constants.ManagedByLabel] != "dev-schedule" {
+		t.Errorf("ArgoCD app managed-by label = %q, want %q", labels[constants.ManagedByLabel], "dev-schedule")
+	}
+
+	// Verify ArgoCD app targeting "prod" was NOT labeled
+	var updatedAppOther unstructured.Unstructured
+	updatedAppOther.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(argoAppOther), &updatedAppOther); err != nil {
+		t.Fatalf("failed to get ArgoCD app: %v", err)
+	}
+	otherLabels := updatedAppOther.GetLabels()
+	if _, exists := otherLabels[constants.StateLabel]; exists {
+		t.Errorf("prod ArgoCD app should not have state label")
+	}
+}
+
+func TestReconcile_ArgoCDUpscale(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	// Deployment already scaled down
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web",
+			Namespace: "dev",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "3",
+				constants.ManagedByAnnotation:        "dev-schedule",
+			},
+			Labels: map[string]string{
+				constants.ManagedByLabel: "dev-schedule",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+
+	// ArgoCD app already labeled as down
+	argoApp := newArgoCDApp("dev-app", "dev", map[string]string{
+		constants.StateLabel:     constants.StateDown,
+		constants.ManagedByLabel: "dev-schedule",
+	})
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, argoApp, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			// 10 AM = upscale period (after 6 AM upscale, before 6 PM downscale)
+			return time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+		},
+	}
+
+	// First reconcile adds finalizer
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "dev-schedule"},
+	})
+	// Second reconcile does the scaling
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "dev-schedule"},
+	})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// Verify deployment was scaled up
+	var updatedDeploy appsv1.Deployment
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(deploy), &updatedDeploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	if *updatedDeploy.Spec.Replicas != 3 {
+		t.Errorf("deployment replicas = %d, want 3", *updatedDeploy.Spec.Replicas)
+	}
+
+	// Verify ArgoCD app labels were removed
+	var updatedApp unstructured.Unstructured
+	updatedApp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(argoApp), &updatedApp); err != nil {
+		t.Fatalf("failed to get ArgoCD app: %v", err)
+	}
+	labels := updatedApp.GetLabels()
+	if _, exists := labels[constants.StateLabel]; exists {
+		t.Errorf("ArgoCD app state label should be removed after upscale")
+	}
+	if _, exists := labels[constants.ManagedByLabel]; exists {
+		t.Errorf("ArgoCD app managed-by label should be removed after upscale")
+	}
+}
+
+func TestReconcile_ArgoCDDisabled(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+
+	argoApp := newArgoCDApp("dev-app", "dev", nil)
+
+	// No ArgoCD config — feature is disabled
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+			// ArgoCD: nil — disabled
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, argoApp, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			return time.Date(2025, 1, 15, 19, 0, 0, 0, time.UTC) // downscale period
+		},
+	}
+
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "dev-schedule"},
+	})
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "dev-schedule"},
+	})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// Verify deployment was scaled down (normal behavior)
+	var updatedDeploy appsv1.Deployment
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(deploy), &updatedDeploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	if *updatedDeploy.Spec.Replicas != 0 {
+		t.Errorf("deployment replicas = %d, want 0", *updatedDeploy.Spec.Replicas)
+	}
+
+	// Verify ArgoCD app was NOT labeled (feature disabled)
+	var updatedApp unstructured.Unstructured
+	updatedApp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(argoApp), &updatedApp); err != nil {
+		t.Fatalf("failed to get ArgoCD app: %v", err)
+	}
+	labels := updatedApp.GetLabels()
+	if _, exists := labels[constants.StateLabel]; exists {
+		t.Errorf("ArgoCD app should not be labeled when ArgoCD feature is disabled")
 	}
 }
 

@@ -60,6 +60,7 @@ type LightsOutScheduleReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch;update;patch
 
 func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -143,12 +144,23 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		rateLimit = schedule.Spec.DownscaleRateLimit
 	}
 
+	// ArgoCD labeling is ordered relative to workload scaling to prevent false alerts:
+	// - Downscale: label ArgoCD apps first, then scale workloads
+	// - Upscale: scale workloads first, then remove ArgoCD labels
+	if !scaleUp && schedule.Spec.ArgoCD != nil {
+		r.labelArgoCDAppsDown(ctx, &schedule, namespaces)
+	}
+
 	// Scale all workloads (handles collection, budget-based processing, and metrics)
 	scaleResult, err := r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp)
 	if err != nil {
 		logger.Error(err, "failed to scale workloads")
 		r.setErrorCondition(ctx, &schedule, err)
 		return ctrl.Result{}, err
+	}
+
+	if scaleUp && schedule.Spec.ArgoCD != nil {
+		r.removeArgoCDAppLabels(ctx, &schedule, namespaces)
 	}
 
 	stats := scaleResult.stats
@@ -553,6 +565,20 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 		}
 	}
 
+	// Cleanup ArgoCD Application labels
+	if schedule.Spec.ArgoCD != nil {
+		apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
+		if err != nil {
+			logger.Error(err, "failed to discover ArgoCD apps during cleanup")
+		} else {
+			for i := range apps {
+				if _, err := RemoveArgoCDAppLabels(ctx, r.Client, &apps[i], schedule.Name); err != nil {
+					logger.Error(err, "failed to remove labels from ArgoCD app during cleanup", "app", apps[i].GetName())
+				}
+			}
+		}
+	}
+
 	// Record events based on cleanup result
 	if len(restoreErrors) > 0 {
 		logger.Error(nil, "failed to restore some workloads during cleanup",
@@ -615,6 +641,46 @@ func (r *LightsOutScheduleReconciler) listManagedCronJobs(ctx context.Context, n
 		return nil, err
 	}
 	return cronjobs.Items, nil
+}
+
+// labelArgoCDAppsDown discovers and labels ArgoCD apps as down.
+// Errors are logged but do not block workload scaling.
+func (r *LightsOutScheduleReconciler) labelArgoCDAppsDown(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, namespaces []string) {
+	logger := log.FromContext(ctx)
+
+	apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
+	if err != nil {
+		logger.Error(err, "failed to discover ArgoCD apps, continuing with workload scaling")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(schedule, nil, corev1.EventTypeWarning, "ArgoCDDiscoveryFailed", "ArgoCD",
+				"Failed to discover ArgoCD apps: %v", err)
+		}
+		return
+	}
+
+	for i := range apps {
+		if _, err := LabelArgoCDAppDown(ctx, r.Client, &apps[i], schedule.Name); err != nil {
+			logger.Error(err, "failed to label ArgoCD app", "app", apps[i].GetName())
+		}
+	}
+}
+
+// removeArgoCDAppLabels discovers and removes lightsout labels from ArgoCD apps.
+// Errors are logged but do not block reconciliation.
+func (r *LightsOutScheduleReconciler) removeArgoCDAppLabels(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, namespaces []string) {
+	logger := log.FromContext(ctx)
+
+	apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
+	if err != nil {
+		logger.Error(err, "failed to discover ArgoCD apps for label removal")
+		return
+	}
+
+	for i := range apps {
+		if _, err := RemoveArgoCDAppLabels(ctx, r.Client, &apps[i], schedule.Name); err != nil {
+			logger.Error(err, "failed to remove labels from ArgoCD app", "app", apps[i].GetName())
+		}
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -90,6 +90,16 @@ type WorkloadStats struct {
 	CronJobsSuspended int `json:"cronjobsSuspended,omitempty"`
 }
 
+// ArgoCDConfig configures optional ArgoCD Application CRD labeling.
+// When present, lightsout labels ArgoCD Application CRDs to signal
+// downscale state, preventing false alerts in ArgoCD UIs.
+type ArgoCDConfig struct {
+	// Namespace where ArgoCD Application CRDs live.
+	// +kubebuilder:default=argocd
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+}
+
 // LightsOutScheduleSpec defines the desired state of LightsOutSchedule
 type LightsOutScheduleSpec struct {
 	// Upscale is the cron expression for when to scale workloads up
@@ -142,6 +152,12 @@ type LightsOutScheduleSpec struct {
 	// If not set, all workloads are scaled down at once.
 	// +optional
 	DownscaleRateLimit *RateLimitConfig `json:"downscaleRateLimit,omitempty"`
+
+	// ArgoCD enables labeling of ArgoCD Application CRDs during scaling
+	// operations to signal downscale state. When nil (omitted), ArgoCD
+	// integration is disabled.
+	// +optional
+	ArgoCD *ArgoCDConfig `json:"argoCD,omitempty"`
 }
 
 // LightsOutScheduleStatus defines the observed state of LightsOutSchedule
