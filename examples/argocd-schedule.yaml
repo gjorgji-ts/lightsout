@@ -1,0 +1,16 @@
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: dev-argocd-aware
+spec:
+  upscale: "0 6 * * 1-5"      # 6 AM Monday-Friday
+  downscale: "0 18 * * 1-5"   # 6 PM Monday-Friday
+  timezone: "America/New_York"
+  namespaceSelector:
+    matchLabels:
+      environment: dev
+  # Enable ArgoCD integration: labels ArgoCD Application CRDs during
+  # downscale to prevent false "Degraded" or "OutOfSync" alerts.
+  # Omit this block entirely to disable. Use "argoCD: {}" for defaults.
+  argoCD:
+    namespace: argocd          # defaults to "argocd" if omitted

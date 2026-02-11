@@ -27,7 +27,9 @@ flowchart TD
     R --> ND["Namespace Discovery"]
     PC -->|"current state + next transition"| R
     ND -->|"target namespaces"| R
+    R --> AL["ArgoCD Labeler<br/>(optional)"]
     R --> WS["Workload Scaler<br/>(budget-based rate limiting)"]
+    AL -->|"label/unlabel apps"| ArgoCD["ArgoCD Application CRDs"]
     WS -->|"scale operations"| K8s["Kubernetes API<br/>(Deployments, StatefulSets, CronJobs)"]
     WS -->|"store/restore state"| Ann["Annotations<br/>original-replicas<br/>managed-by"]
     R -->|"emit"| Ev["Kubernetes Events"]
@@ -46,6 +48,7 @@ The central controller loop (`internal/controller/lightsoutschedule_controller.g
 - Delegates to Namespace Discovery to find target namespaces
 - Collects workloads (Deployments, StatefulSets, CronJobs) across those namespaces
 - Filters out excluded workloads via `excludeLabels`
+- If ArgoCD integration is enabled, labels/unlabels ArgoCD Application CRDs (ordered relative to scaling)
 - Delegates to the Workload Scaler for actual scaling (with budget-based rate limiting when configured)
 - Updates the schedule's status and conditions
 - Re-queues for the next transition time, or sooner if a batch limit was reached
@@ -90,6 +93,25 @@ Prevents resource spikes during bulk scaling. When rate limiting is configured (
 
 This design keeps the controller responsive during large-scale operations. Spec changes, suspension, deletion, and period transitions (e.g., an upscale time arriving mid-downscale) are all picked up on the next requeue rather than being blocked until all batches finish. The requeue delay is `min(delayBetweenBatches, timeUntilNextTransition)` to ensure period transitions are never missed.
 
+### ArgoCD Labeler
+
+Optional component that labels ArgoCD Application CRDs during scaling operations (`internal/controller/argocd.go`). When `spec.argoCD` is set on a schedule, the labeler:
+
+- **Discovers** ArgoCD `Application` CRDs in the configured namespace (default: `argocd`)
+- **Filters** applications whose `spec.destination.namespace` matches the schedule's target namespaces
+- **Labels** matching applications with `lightsout.techsupport.mk/state: down` and `lightsout.techsupport.mk/managed-by: <schedule>` during downscale
+- **Removes** those labels during upscale
+
+This uses an unstructured client to avoid any compile-time dependency on ArgoCD. If the ArgoCD CRD is not installed on the cluster, the labeler gracefully skips with a log message.
+
+Execution is ordered to prevent false alerts:
+- **Downscale**: label ArgoCD apps first, then scale workloads
+- **Upscale**: scale workloads first, then remove ArgoCD labels
+
+ArgoCD errors are best-effort — they are logged and emitted as events but never block workload scaling.
+
+See the [ArgoCD Integration Guide](argocd.md) for usage details.
+
 ## Key Design Decisions
 
 ### Cluster-Scoped Resource
@@ -112,6 +134,15 @@ Every scaling operation checks current state before acting. This means:
 - Multiple reconciliations in quick succession don't cause issues
 - The controller can be restarted at any time without data loss
 
+### Soft ArgoCD Dependency
+
+ArgoCD integration uses Kubernetes unstructured objects instead of importing ArgoCD Go types. This means:
+
+- The operator compiles without any `argoproj.io` dependency
+- It runs normally on clusters without ArgoCD installed
+- RBAC permissions for `argoproj.io/applications` are requested but unused if ArgoCD is absent
+- The feature is entirely opt-in via the `spec.argoCD` field
+
 ## Webhooks
 
 LightsOut includes optional admission webhooks for validation and defaulting:
@@ -123,11 +154,12 @@ LightsOut includes optional admission webhooks for validation and defaulting:
 - Validates the timezone is a recognized IANA timezone
 - Ensures at least one namespace selection method is configured
 - Validates rate limit configurations (batch size > 0, non-negative delay)
+- Validates ArgoCD namespace is a valid DNS label when provided
 - Warns (but does not reject) when schedules overlap with existing ones
 
 ## Metrics
 
-LightsOut exposes Prometheus metrics on the metrics port (default `8080`):
+LightsOut exposes Prometheus metrics via the controller-runtime metrics server:
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|

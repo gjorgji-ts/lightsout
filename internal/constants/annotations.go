@@ -34,4 +34,13 @@ const (
 
 	// FinalizerName is the finalizer used to ensure cleanup on schedule deletion
 	FinalizerName = AnnotationPrefix + "cleanup"
+
+	// StateLabel signals the downscale state on ArgoCD Application CRDs
+	StateLabel = LabelPrefix + "state"
+
+	// StateDown is the value for StateLabel when the app is downscaled
+	StateDown = "down"
+
+	// DefaultArgoCDNamespace is the default namespace where ArgoCD Application CRDs live
+	DefaultArgoCDNamespace = "argocd"
 )

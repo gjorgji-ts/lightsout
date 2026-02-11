@@ -122,6 +122,7 @@ With webhooks enabled, schedules are validated before being persisted:
 - **Invalid timezones** are rejected
 - **Missing namespace selection** (no `namespaceSelector` or `namespaces`) is rejected
 - **Invalid rate limit config** (batch size < 1, negative delays) is rejected
+- **Invalid ArgoCD namespace** (not a valid DNS label) is rejected
 - **Overlapping schedules** produce a warning (not rejected, but you'll know)
 - **Default timezone** is set to `UTC` if not specified
 

@@ -21,8 +21,11 @@ import (
 	"fmt"
 	"time"
 
+	"strings"
+
 	"github.com/robfig/cron/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -268,6 +271,18 @@ func ValidateScheduleSpec(schedule *lightsoutv1alpha1.LightsOutSchedule) error {
 	// Validate rate limit configs
 	allErrs = append(allErrs, ValidateRateLimit(schedule.Spec.UpscaleRateLimit, "upscaleRateLimit")...)
 	allErrs = append(allErrs, ValidateRateLimit(schedule.Spec.DownscaleRateLimit, "downscaleRateLimit")...)
+
+	// Validate ArgoCD config
+	if schedule.Spec.ArgoCD != nil && schedule.Spec.ArgoCD.Namespace != "" {
+		errs := validation.IsDNS1123Label(schedule.Spec.ArgoCD.Namespace)
+		if len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "argoCD", "namespace"),
+				schedule.Spec.ArgoCD.Namespace,
+				fmt.Sprintf("invalid namespace name: %s", strings.Join(errs, ", ")),
+			))
+		}
+	}
 
 	if len(allErrs) == 0 {
 		return nil

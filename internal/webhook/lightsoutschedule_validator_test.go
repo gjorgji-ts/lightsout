@@ -131,6 +131,55 @@ func TestValidateSchedule_WithRateLimits(t *testing.T) {
 	}
 }
 
+func TestValidateScheduleSpec_ArgoCDConfig(t *testing.T) {
+	validBase := lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:    "0 6 * * *",
+			Downscale:  "0 18 * * *",
+			Namespaces: []string{"dev"},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		argoCD  *lightsoutv1alpha1.ArgoCDConfig
+		wantErr bool
+	}{
+		{
+			name:    "nil argoCD config is valid",
+			argoCD:  nil,
+			wantErr: false,
+		},
+		{
+			name:    "empty namespace defaults to argocd (valid)",
+			argoCD:  &lightsoutv1alpha1.ArgoCDConfig{},
+			wantErr: false,
+		},
+		{
+			name:    "valid custom namespace",
+			argoCD:  &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd-system"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid namespace name",
+			argoCD:  &lightsoutv1alpha1.ArgoCDConfig{Namespace: "INVALID_NS!"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schedule := validBase.DeepCopy()
+			schedule.Spec.ArgoCD = tt.argoCD
+			err := ValidateScheduleSpec(schedule)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateScheduleSpec() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestSchedulesOverlap(t *testing.T) {
 	tests := []struct {
 		name    string
