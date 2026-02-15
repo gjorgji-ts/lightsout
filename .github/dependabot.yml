@@ -5,21 +5,33 @@ updates:
     schedule:
       interval: weekly
     commit-message:
-      prefix: "deps"
+      prefix: "chore(deps)"
     open-pull-requests-limit: 15
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     commit-message:
-      prefix: "ci"
+      prefix: "chore(ci)"
     open-pull-requests-limit: 15
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
     commit-message:
-      prefix: "docker"
+      prefix: "chore(docker)"
     open-pull-requests-limit: 15
+    groups:
+      docker-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
