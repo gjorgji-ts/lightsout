@@ -10,6 +10,7 @@ This guide covers two installation paths:
 - Kubernetes cluster (v1.28+)
 - [Helm](https://helm.sh/) v3
 - `kubectl` configured for your cluster
+- A node autoscaler like [Karpenter](https://karpenter.sh/) or [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler) (LightsOut scales workloads to zero, but you need a node autoscaler to deprovision the empty nodes and realize cost savings)
 
 ## Basic Install
 

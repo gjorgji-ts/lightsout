@@ -1,8 +1,23 @@
 # LightsOut
 
-LightsOut is a Kubernetes operator that automatically scales down workloads during off-hours and restores them during business hours. Define schedules as custom resources, and LightsOut handles the rest. Scaling Deployments, StatefulSets, and CronJobs across namespaces on your configured timetable.
+LightsOut is a Kubernetes operator that automatically scales down workloads during off-hours and restores them during business hours. This helps platform engineering teams **save over 60% on development and staging cluster costs**.
 
-No application changes required. Original replica counts are preserved and restored automatically.
+Define schedules as custom resources, and LightsOut takes care of the rest. You can scale Deployments, StatefulSets, and CronJobs across namespaces according to your configured timetable without any application changes. Original replica counts are automatically preserved and restored.
+
+## Why LightsOut?
+
+Development and staging clusters are typically idle outside business hours, including evenings, nights, and weekends. This equates to approximately 70% of the week, during which you’re paying for compute resources that remain unused.
+
+LightsOut, in conjunction with a node autoscaler like [Karpenter](https://karpenter.sh/), transforms idle time into savings.
+
+1. **LightsOut scales workloads to zero**: Deployments, StatefulSets, and CronJobs are scaled down or suspended according to your schedule.
+2. **Karpenter removes empty nodes**: With no workloads requesting resources, Karpenter (or Cluster Autoscaler) deprovisions the underlying nodes.
+3. **Cloud provider stops billing**: Since there are no nodes, there are no compute charges.
+
+When business hours resume, LightsOut restores workloads to their original replica counts, and your autoscaler provisions nodes to meet the increased demand.
+
+> [!NOTE]
+> LightsOut manages the workload layer, while your node autoscaler handles the infrastructure layer.  Together, they eliminate idle compute costs.
 
 ## Features
 
@@ -133,6 +148,17 @@ LightsOut exposes Prometheus metrics on the metrics endpoint:
 | `lightsout_last_reconcile_timestamp_seconds` | Gauge | Unix timestamp of last reconciliation |
 
 Scaling events are also recorded as Kubernetes Events on the `LightsOutSchedule` resource.
+
+## Using with Karpenter
+
+LightsOut is designed to work seamlessly with [Karpenter](https://karpenter.sh/) to achieve maximum cost savings. There’s no need for any special configuration, the two systems automatically complement each other.
+
+- **LightsOut** monitors cron schedules and scales workloads to zero during off-hours.
+- **Karpenter** monitors node utilization and removes nodes that are no longer needed.
+
+As long as Karpenter’s `NodePool` consolidation policy is enabled (the default setting), empty nodes are drained and terminated within minutes of LightsOut scaling workloads down.
+
+This approach also works with [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler). Any node autoscaler that deprovisions underutilized nodes will produce the same effect.
 
 ## Documentation
 
