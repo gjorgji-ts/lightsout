@@ -4,6 +4,24 @@ LightsOut is a Kubernetes operator built with [controller-runtime](https://githu
 
 This document explains how the system works internally.
 
+## Where LightsOut Fits
+
+Kubernetes cost optimization has two layers:
+
+```mermaid
+flowchart TD
+    LO["<b>Workload Layer — LightsOut</b><br/>Scales Deployments, StatefulSets, CronJobs<br/>to zero during off-hours"]
+    K["<b>Node Layer — Karpenter / Cluster Autoscaler</b><br/>Detects empty nodes and deprovisions them"]
+    C["<b>Cloud Provider</b><br/>No nodes → no compute charges"]
+
+    LO -->|"nodes become idle"| K
+    K -->|"nodes terminated"| C
+```
+
+LightsOut operates at the **workload layer**, scaling pods to zero to free up node resources. A node autoscaler like [Karpenter](https://karpenter.sh/) operates at the **node layer**, detecting idle nodes and removing them. Together, these processes convert idle off-hours into direct cost savings, typically over 60% for development and staging clusters that are only used during business hours.
+
+LightsOut does not directly manage nodes. Any node autoscaler that deprovisions underutilized nodes will work with LightsOut.
+
 ## Overview
 
 A Kubernetes operator is a controller that extends the Kubernetes API with custom resources (CRDs) and reconciliation logic. Instead of running imperative scripts on a timer, you declare your desired scaling schedule as a `LightsOutSchedule` resource, and the operator continuously ensures the cluster matches that intent.
@@ -105,6 +123,7 @@ Optional component that labels ArgoCD Application CRDs during scaling operations
 This uses an unstructured client to avoid any compile-time dependency on ArgoCD. If the ArgoCD CRD is not installed on the cluster, the labeler gracefully skips with a log message.
 
 Execution is ordered to prevent false alerts:
+
 - **Downscale**: label ArgoCD apps first, then scale workloads
 - **Upscale**: scale workloads first, then remove ArgoCD labels
 
@@ -150,6 +169,7 @@ LightsOut includes optional admission webhooks for validation and defaulting:
 **Mutating webhook** — sets `timezone` to `UTC` if not specified.
 
 **Validating webhook** — rejects invalid schedules before they're persisted:
+
 - Validates cron expressions for both `upscale` and `downscale`
 - Validates the timezone is a recognized IANA timezone
 - Ensures at least one namespace selection method is configured
@@ -161,14 +181,14 @@ LightsOut includes optional admission webhooks for validation and defaulting:
 
 LightsOut exposes Prometheus metrics via the controller-runtime metrics server:
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `lightsout_schedule_state` | Gauge | `schedule` | Current state (1=Up, 0=Down) |
-| `lightsout_next_transition_seconds` | Gauge | `schedule`, `transition_type` | Seconds until next transition |
-| `lightsout_scaling_operations_total` | Counter | `schedule`, `namespace`, `workload_type`, `operation` | Total scaling operations |
-| `lightsout_scaling_errors_total` | Counter | `schedule`, `namespace`, `workload_type` | Total scaling errors |
-| `lightsout_managed_workloads` | Gauge | `schedule`, `workload_type` | Managed workload count |
-| `lightsout_scaling_batches_total` | Counter | `schedule`, `direction` | Batches processed |
-| `lightsout_scaling_workloads_processed_total` | Counter | `schedule`, `direction`, `result` | Workloads processed |
-| `lightsout_scaling_duration_seconds` | Histogram | `schedule`, `direction` | Scaling operation duration |
-| `lightsout_last_reconcile_timestamp_seconds` | Gauge | `schedule` | Last reconcile timestamp |
+| Metric                                        | Type      | Labels                                                | Description                   |
+| --------------------------------------------- | --------- | ----------------------------------------------------- | ----------------------------- |
+| `lightsout_schedule_state`                    | Gauge     | `schedule`                                            | Current state (1=Up, 0=Down)  |
+| `lightsout_next_transition_seconds`           | Gauge     | `schedule`, `transition_type`                         | Seconds until next transition |
+| `lightsout_scaling_operations_total`          | Counter   | `schedule`, `namespace`, `workload_type`, `operation` | Total scaling operations      |
+| `lightsout_scaling_errors_total`              | Counter   | `schedule`, `namespace`, `workload_type`              | Total scaling errors          |
+| `lightsout_managed_workloads`                 | Gauge     | `schedule`, `workload_type`                           | Managed workload count        |
+| `lightsout_scaling_batches_total`             | Counter   | `schedule`, `direction`                               | Batches processed             |
+| `lightsout_scaling_workloads_processed_total` | Counter   | `schedule`, `direction`, `result`                     | Workloads processed           |
+| `lightsout_scaling_duration_seconds`          | Histogram | `schedule`, `direction`                               | Scaling operation duration    |
+| `lightsout_last_reconcile_timestamp_seconds`  | Gauge     | `schedule`                                            | Last reconcile timestamp      |
