@@ -93,7 +93,7 @@ jobs:
 
       - name: Run GoReleaser
         if: steps.check.outputs.skip == 'false'
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
           args: release --clean
