@@ -65,6 +65,14 @@ spec:
                     default: argocd
                     description: Namespace where ArgoCD Application CRDs live.
                     type: string
+                  warmupTimeout:
+                    default: 10m
+                    description: |-
+                      WarmupTimeout is how long to keep the warming-up label on ArgoCD Application
+                      CRDs after upscale before removing it regardless of pod readiness.
+                      This prevents ArgoCD alerts from firing while pods are starting up.
+                      Defaults to 10 minutes.
+                    type: string
                 type: object
               downscale:
                 description: Downscale is the cron expression for when to scale workloads

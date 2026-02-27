@@ -29,6 +29,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -159,8 +160,9 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	stillWarmingUp := false
 	if scaleUp && schedule.Spec.ArgoCD != nil {
-		r.removeArgoCDAppLabels(ctx, &schedule, namespaces)
+		stillWarmingUp = r.handleArgoCDWarmup(ctx, &schedule, namespaces, now)
 	}
 
 	stats := scaleResult.stats
@@ -239,6 +241,11 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			}
 		}
 		// Small floor to prevent zero/negative from stalling the batch
+		requeueAfter = max(requeueAfter, time.Second)
+	} else if stillWarmingUp {
+		// ArgoCD apps are warming up — poll readiness at WarmupCheckInterval,
+		// but no later than the next period transition.
+		requeueAfter = min(constants.WarmupCheckInterval, timeUntilNextTransition)
 		requeueAfter = max(requeueAfter, time.Second)
 	} else {
 		requeueAfter = timeUntilNextTransition
@@ -665,22 +672,94 @@ func (r *LightsOutScheduleReconciler) labelArgoCDAppsDown(ctx context.Context, s
 	}
 }
 
-// removeArgoCDAppLabels discovers and removes lightsout labels from ArgoCD apps.
+// handleArgoCDWarmup drives the warming-up state machine for all ArgoCD apps matched
+// by the schedule during the Up period. It transitions apps from down→warming-up on
+// the first upscale reconcile, then polls readiness on subsequent reconciles until all
+// managed workloads are ready (or the warmup timeout elapses).
+// Returns true if any app is still in the warming-up state and the reconciler should
+// requeue at WarmupCheckInterval.
 // Errors are logged but do not block reconciliation.
-func (r *LightsOutScheduleReconciler) removeArgoCDAppLabels(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, namespaces []string) {
+func (r *LightsOutScheduleReconciler) handleArgoCDWarmup(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, namespaces []string, now time.Time) bool {
 	logger := log.FromContext(ctx)
 
 	apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
 	if err != nil {
-		logger.Error(err, "failed to discover ArgoCD apps for label removal")
-		return
+		logger.Error(err, "failed to discover ArgoCD apps for warmup handling")
+		if r.Recorder != nil {
+			r.Recorder.Eventf(schedule, nil, corev1.EventTypeWarning, "ArgoCDDiscoveryFailed", "ArgoCD",
+				"Failed to discover ArgoCD apps: %v", err)
+		}
+		return false
 	}
 
+	warmupTimeout := constants.DefaultWarmupTimeout
+	if schedule.Spec.ArgoCD.WarmupTimeout != nil {
+		warmupTimeout = schedule.Spec.ArgoCD.WarmupTimeout.Duration
+	}
+
+	stillWarmingUp := false
+
 	for i := range apps {
-		if _, err := RemoveArgoCDAppLabels(ctx, r.Client, &apps[i], schedule.Name); err != nil {
-			logger.Error(err, "failed to remove labels from ArgoCD app", "app", apps[i].GetName())
+		app := &apps[i]
+		labels := app.GetLabels()
+		state := labels[constants.StateLabel]
+
+		switch state {
+		case constants.StateDown:
+			// Workloads just scaled up — transition to warming-up
+			if _, err := LabelArgoCDAppWarmingUp(ctx, r.Client, app, schedule.Name, now); err != nil {
+				logger.Error(err, "failed to label ArgoCD app as warming-up", "app", app.GetName())
+			}
+			stillWarmingUp = true
+
+		case constants.StateWarmingUp:
+			// Determine when warming-up started; fall back to now if annotation is missing/invalid
+			warmingUpSince := now
+			annotations := app.GetAnnotations()
+			if ts, ok := annotations[constants.WarmingUpSinceAnnotation]; ok {
+				if parsed, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
+					warmingUpSince = parsed
+				} else {
+					logger.Info("malformed warming-up-since annotation, using current time as fallback",
+						"app", app.GetName(), "value", ts)
+				}
+			}
+
+			timedOut := now.Sub(warmingUpSince) >= warmupTimeout
+
+			destNS, _, _ := unstructured.NestedString(app.Object, "spec", "destination", "namespace")
+
+			ready := timedOut // timeout forces completion regardless of pod state
+			if !ready && destNS != "" {
+				var readErr error
+				ready, readErr = CheckWorkloadReadiness(ctx, r.Client, destNS)
+				if readErr != nil {
+					logger.Error(readErr, "failed to check workload readiness, will retry",
+						"app", app.GetName(), "namespace", destNS)
+					stillWarmingUp = true
+					continue
+				}
+			} else if !ready {
+				// destNS is empty (cluster-scoped app); cannot check pod readiness — will complete on timeout
+				logger.Info("ArgoCD app has no destination namespace, warming-up will complete on timeout",
+					"app", app.GetName(), "timeout", warmupTimeout)
+			}
+
+			if ready {
+				if err := CompleteArgoCDWarmup(ctx, r.Client, app); err != nil {
+					logger.Error(err, "failed to complete ArgoCD warmup", "app", app.GetName())
+					stillWarmingUp = true
+				} else if timedOut {
+					logger.Info("warmup timeout elapsed, labels removed from ArgoCD app",
+						"app", app.GetName(), "timeout", warmupTimeout)
+				}
+			} else {
+				stillWarmingUp = true
+			}
 		}
 	}
+
+	return stillWarmingUp
 }
 
 // SetupWithManager sets up the controller with the Manager.

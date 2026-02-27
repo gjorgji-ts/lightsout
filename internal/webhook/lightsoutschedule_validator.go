@@ -273,13 +273,22 @@ func ValidateScheduleSpec(schedule *lightsoutv1alpha1.LightsOutSchedule) error {
 	allErrs = append(allErrs, ValidateRateLimit(schedule.Spec.DownscaleRateLimit, "downscaleRateLimit")...)
 
 	// Validate ArgoCD config
-	if schedule.Spec.ArgoCD != nil && schedule.Spec.ArgoCD.Namespace != "" {
-		errs := validation.IsDNS1123Label(schedule.Spec.ArgoCD.Namespace)
-		if len(errs) > 0 {
+	if schedule.Spec.ArgoCD != nil {
+		if schedule.Spec.ArgoCD.Namespace != "" {
+			errs := validation.IsDNS1123Label(schedule.Spec.ArgoCD.Namespace)
+			if len(errs) > 0 {
+				allErrs = append(allErrs, field.Invalid(
+					field.NewPath("spec", "argoCD", "namespace"),
+					schedule.Spec.ArgoCD.Namespace,
+					fmt.Sprintf("invalid namespace name: %s", strings.Join(errs, ", ")),
+				))
+			}
+		}
+		if schedule.Spec.ArgoCD.WarmupTimeout != nil && schedule.Spec.ArgoCD.WarmupTimeout.Duration <= 0 {
 			allErrs = append(allErrs, field.Invalid(
-				field.NewPath("spec", "argoCD", "namespace"),
-				schedule.Spec.ArgoCD.Namespace,
-				fmt.Sprintf("invalid namespace name: %s", strings.Join(errs, ", ")),
+				field.NewPath("spec", "argoCD", "warmupTimeout"),
+				schedule.Spec.ArgoCD.WarmupTimeout.Duration,
+				"must be positive",
 			))
 		}
 	}

@@ -28,14 +28,16 @@ spec:
   namespaceSelector:
     matchLabels:
       environment: dev
-  argoCD:                    # presence of this block enables the feature
-    namespace: argocd      # defaults to "argocd" if omitted
+  argoCD:                      # presence of this block enables the feature
+    namespace: argocd          # defaults to "argocd" if omitted
+    warmupTimeout: 10m         # defaults to 10m if omitted
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `argoCD` | object | `nil` (disabled) | When present, enables ArgoCD integration |
 | `argoCD.namespace` | string | `argocd` | Namespace where ArgoCD Application CRDs live |
+| `argoCD.warmupTimeout` | duration | `10m` | How long to keep the `warming-up` label after upscale before removing it regardless of pod readiness |
 
 Setting `argoCD` to any value (even `{}`) enables the feature. Omitting it entirely disables it.
 
@@ -111,6 +113,14 @@ When ArgoCD integration is enabled, the reconciler:
 
 ### Labels Applied
 
+LightsOut uses a three-state lifecycle on matching ArgoCD Application CRDs:
+
+| State | `lightsout.techsupport.mk/state` | When |
+|-------|----------------------------------|------|
+| Downscaled | `down` | Workloads are at 0 replicas |
+| Warming up | `warming-up` | Workloads have been scaled back up but pods are not yet all Ready |
+| Up (normal) | _(absent)_ | All workloads are healthy; no labels present |
+
 During downscale, LightsOut adds these labels to matching ArgoCD Application CRDs:
 
 | Label | Value | Purpose |
@@ -118,7 +128,13 @@ During downscale, LightsOut adds these labels to matching ArgoCD Application CRD
 | `lightsout.techsupport.mk/state` | `down` | Signals the application is intentionally downscaled |
 | `lightsout.techsupport.mk/managed-by` | `<schedule-name>` | Identifies which schedule manages this application |
 
-During upscale, both labels are removed, leaving the Application CRD pristine.
+During upscale, the `state` label transitions to `warming-up` and the following annotation is added:
+
+| Annotation | Value | Purpose |
+|------------|-------|---------|
+| `lightsout.techsupport.mk/warming-up-since` | RFC3339 timestamp | Records when warming-up began; used to enforce `warmupTimeout` across controller restarts |
+
+Once all Deployments and StatefulSets in the target namespace have all their desired replicas ready — or the `warmupTimeout` elapses — both labels and the annotation are removed, leaving the Application CRD pristine.
 
 ### Execution Ordering
 
@@ -130,11 +146,13 @@ Labels are applied and removed in a specific order relative to workload scaling 
 
 **Upscale:**
 1. Scale workloads back up
-2. Remove labels from ArgoCD apps
+2. Transition ArgoCD apps from `down` → `warming-up` (adds `warming-up-since` timestamp)
+3. Requeue every 30 seconds to check pod readiness
+4. Once all pods are ready (or `warmupTimeout` elapses), remove all labels
 
 This ordering ensures that:
 - On downscale, ArgoCD knows the app is being intentionally scaled down *before* pods disappear
-- On upscale, pods are running *before* the "down" signal is removed
+- On upscale, pods are fully running and ready *before* the suppression signal is removed, eliminating the false-alert window during pod startup
 
 ### Schedule Deletion
 
@@ -160,35 +178,39 @@ If multiple schedules target overlapping namespaces, each schedule only manages 
 
 ### Filtering in ArgoCD UI
 
-You can filter applications in the ArgoCD UI by label to see which apps are currently downscaled:
+You can filter applications in the ArgoCD UI by label to see which apps are in a managed state:
 
 ```
 lightsout.techsupport.mk/state=down
+lightsout.techsupport.mk/state=warming-up
 ```
 
 ### Notification Triggers
 
-ArgoCD notification triggers can check for the LightsOut label to suppress alerts during downscale. Add the label check to each trigger you want to suppress:
+ArgoCD notification triggers can check for the LightsOut label to suppress alerts during downscale and warmup. Add the label check to each trigger you want to suppress:
 
 ```yaml
 trigger.on-health-degraded: |
   - when: app.status.health.status == 'Degraded'
       and app.metadata.labels['lightsout.techsupport.mk/state'] != 'down'
+      and app.metadata.labels['lightsout.techsupport.mk/state'] != 'warming-up'
     send: [app-health-degraded]
 
 trigger.on-sync-failed: |
   - when: app.status.operationState.phase == 'Failed'
       and app.metadata.labels['lightsout.techsupport.mk/state'] != 'down'
+      and app.metadata.labels['lightsout.techsupport.mk/state'] != 'warming-up'
     send: [app-sync-failed]
 
 trigger.on-progress-stuck: |
   - when: app.status.health.status == 'Progressing'
       and time.Now().Sub(time.Parse(app.status.operationState.startedAt)).Minutes() >= 10
       and app.metadata.labels['lightsout.techsupport.mk/state'] != 'down'
+      and app.metadata.labels['lightsout.techsupport.mk/state'] != 'warming-up'
     send: [app-progress-stuck]
 ```
 
-When the label is absent (normal upscaled state), the expression evaluates the label as an empty string, and `"" != "down"` is `true`, so the trigger fires normally. When the label is `"down"`, the condition is `false` and the notification is suppressed.
+When the label is absent (normal upscaled state), the expression evaluates the label as an empty string. `"" != "down"` and `"" != "warming-up"` are both `true`, so the trigger fires normally. During downscale or warmup the respective condition is `false` and the notification is suppressed.
 
 ### Grafana / Prometheus
 

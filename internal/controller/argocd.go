@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -86,7 +88,7 @@ func LabelArgoCDAppDown(ctx context.Context, c client.Client, app *unstructured.
 		return true, nil
 	}
 
-	// Skip if already labeled down by this schedule (idempotent)
+	// Skip if already labeled down by this schedule
 	if labels[constants.StateLabel] == constants.StateDown && labels[constants.ManagedByLabel] == scheduleName {
 		logger.V(1).Info("skipping ArgoCD app: already labeled down")
 		return true, nil
@@ -95,6 +97,14 @@ func LabelArgoCDAppDown(ctx context.Context, c client.Client, app *unstructured.
 	labels[constants.StateLabel] = constants.StateDown
 	labels[constants.ManagedByLabel] = scheduleName
 	app.SetLabels(labels)
+
+	// Clean up any warming-up-since annotation left from a previous upscale cycle
+	// (edge case: downscale fires while the app is still in warming-up state)
+	annotations := app.GetAnnotations()
+	if annotations != nil {
+		delete(annotations, constants.WarmingUpSinceAnnotation)
+		app.SetAnnotations(annotations)
+	}
 
 	if err := c.Update(ctx, app); err != nil {
 		return false, err
@@ -134,4 +144,117 @@ func RemoveArgoCDAppLabels(ctx context.Context, c client.Client, app *unstructur
 
 	logger.Info("removed lightsout labels from ArgoCD app")
 	return false, nil
+}
+
+// LabelArgoCDAppWarmingUp transitions an ArgoCD Application from the down state to the
+// warming-up state. It sets state=warming-up and records the current time in the
+// warming-up-since annotation so the timeout can be enforced on subsequent reconciles.
+// Returns true if the operation was skipped.
+func LabelArgoCDAppWarmingUp(ctx context.Context, c client.Client, app *unstructured.Unstructured, scheduleName string, now time.Time) (bool, error) {
+	logger := log.FromContext(ctx).WithValues("argocd-app", app.GetName())
+
+	labels := app.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+
+	// Skip if managed by different schedule
+	if managedBy, exists := labels[constants.ManagedByLabel]; exists && managedBy != scheduleName {
+		logger.Info("skipping ArgoCD app: managed by different schedule", "managedBy", managedBy)
+		return true, nil
+	}
+
+	// Skip if already in warming-up state
+	if labels[constants.StateLabel] == constants.StateWarmingUp && labels[constants.ManagedByLabel] == scheduleName {
+		logger.V(1).Info("skipping ArgoCD app: already in warming-up state")
+		return true, nil
+	}
+
+	labels[constants.StateLabel] = constants.StateWarmingUp
+	labels[constants.ManagedByLabel] = scheduleName
+	app.SetLabels(labels)
+
+	annotations := app.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[constants.WarmingUpSinceAnnotation] = now.UTC().Format(time.RFC3339)
+	app.SetAnnotations(annotations)
+
+	if err := c.Update(ctx, app); err != nil {
+		return false, err
+	}
+
+	logger.Info("labeled ArgoCD app as warming-up")
+	return false, nil
+}
+
+// CheckWorkloadReadiness reports whether all active Deployments and StatefulSets
+// in the given namespace have all their desired replicas ready.
+// Workloads with spec.replicas == 0 are skipped (intentionally at zero).
+// All workloads in the namespace are checked so that the warming-up signal
+// accurately reflects the full health of the namespace, not just the subset
+// lightsout scaled up.
+func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace string) (bool, error) {
+	var deployments appsv1.DeploymentList
+	if err := c.List(ctx, &deployments, client.InNamespace(namespace)); err != nil {
+		return false, err
+	}
+	for _, d := range deployments.Items {
+		desired := int32(1)
+		if d.Spec.Replicas != nil {
+			desired = *d.Spec.Replicas
+		}
+		if desired == 0 {
+			continue
+		}
+		if d.Status.ReadyReplicas < desired {
+			return false, nil
+		}
+	}
+
+	var statefulsets appsv1.StatefulSetList
+	if err := c.List(ctx, &statefulsets, client.InNamespace(namespace)); err != nil {
+		return false, err
+	}
+	for _, s := range statefulsets.Items {
+		desired := int32(1)
+		if s.Spec.Replicas != nil {
+			desired = *s.Spec.Replicas
+		}
+		if desired == 0 {
+			continue
+		}
+		if s.Status.ReadyReplicas < desired {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// CompleteArgoCDWarmup removes the lightsout state labels and the warming-up-since
+// annotation from an ArgoCD Application. Workload labels are already cleaned up by
+// the scaler at upscale time, so only the ArgoCD app needs updating here.
+func CompleteArgoCDWarmup(ctx context.Context, c client.Client, app *unstructured.Unstructured) error {
+	logger := log.FromContext(ctx).WithValues("argocd-app", app.GetName())
+
+	labels := app.GetLabels()
+	if labels != nil {
+		delete(labels, constants.StateLabel)
+		delete(labels, constants.ManagedByLabel)
+		app.SetLabels(labels)
+	}
+
+	annotations := app.GetAnnotations()
+	if annotations != nil {
+		delete(annotations, constants.WarmingUpSinceAnnotation)
+		app.SetAnnotations(annotations)
+	}
+
+	if err := c.Update(ctx, app); err != nil {
+		return err
+	}
+	logger.Info("completed warming-up, removed labels from ArgoCD app")
+	return nil
 }

@@ -41,6 +41,13 @@ const (
 	// StateDown is the value for StateLabel when the app is downscaled
 	StateDown = "down"
 
+	// StateWarmingUp is the value for StateLabel while upscaled workloads are becoming ready
+	StateWarmingUp = "warming-up"
+
+	// WarmingUpSinceAnnotation stores the RFC3339 timestamp when warming-up began,
+	// used to enforce the configurable warmup timeout
+	WarmingUpSinceAnnotation = AnnotationPrefix + "warming-up-since"
+
 	// DefaultArgoCDNamespace is the default namespace where ArgoCD Application CRDs live
 	DefaultArgoCDNamespace = "argocd"
 )
