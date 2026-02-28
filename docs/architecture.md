@@ -125,7 +125,7 @@ This uses an unstructured client to avoid any compile-time dependency on ArgoCD.
 Execution is ordered to prevent false alerts:
 
 - **Downscale**: label ArgoCD apps first, then scale workloads
-- **Upscale**: scale workloads first, then remove ArgoCD labels
+- **Upscale**: scale workloads first, then transition ArgoCD apps from `down` → `warming-up`, then remove all labels once pods are ready (or `warmupTimeout` elapses)
 
 ArgoCD errors are best-effort — they are logged and emitted as events but never block workload scaling.
 
@@ -159,7 +159,7 @@ ArgoCD integration uses Kubernetes unstructured objects instead of importing Arg
 
 - The operator compiles without any `argoproj.io` dependency
 - It runs normally on clusters without ArgoCD installed
-- RBAC permissions for `argoproj.io/applications` are requested but unused if ArgoCD is absent
+- RBAC permissions for `argoproj.io/applications` are opt-in via `rbac.argocd: true` in Helm values and are omitted by default
 - The feature is entirely opt-in via the `spec.argoCD` field
 
 ## Webhooks
