@@ -4,7 +4,7 @@ Thank you for your interest in contributing! This guide covers everything you ne
 
 ## Prerequisites
 
-- Go 1.22+
+- Go 1.26+
 - `kubectl` configured against a cluster (for manual testing)
 - [Kind](https://kind.sigs.k8s.io/) (for e2e tests)
 - Docker (for building images and e2e tests)
