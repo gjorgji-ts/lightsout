@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -713,6 +714,11 @@ func TestReconcile_ArgoCDWarmupComplete(t *testing.T) {
 	if result.RequeueAfter < expectedRequeue-tolerance || result.RequeueAfter > expectedRequeue+tolerance {
 		t.Errorf("requeue after warmup complete = %v, want ~%v (±%v)", result.RequeueAfter, expectedRequeue, tolerance)
 	}
+
+	// Metric must return to Up (1), not remain at WarmingUp (2)
+	if got := testutil.ToFloat64(ScheduleState.WithLabelValues("dev-schedule")); got != 1 {
+		t.Errorf("schedule state metric = %v, want 1 (Up) after warmup complete", got)
+	}
 }
 
 func TestReconcile_ArgoCDWarmupTimeout(t *testing.T) {
@@ -880,6 +886,11 @@ func TestReconcile_ArgoCDWarmupRequeue(t *testing.T) {
 	// Should requeue at WarmupCheckInterval since warming-up is still in progress
 	if result.RequeueAfter != constants.WarmupCheckInterval {
 		t.Errorf("requeue = %v, want WarmupCheckInterval (%v)", result.RequeueAfter, constants.WarmupCheckInterval)
+	}
+
+	// Metric must reflect warming-up state (2), not just Up (1)
+	if got := testutil.ToFloat64(ScheduleState.WithLabelValues("dev-schedule")); got != 2 {
+		t.Errorf("schedule state metric = %v, want 2 (WarmingUp)", got)
 	}
 }
 

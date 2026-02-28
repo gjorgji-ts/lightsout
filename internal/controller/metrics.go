@@ -22,11 +22,11 @@ import (
 )
 
 var (
-	// ScheduleState tracks the current state of each schedule (1=Up, 0=Down)
+	// ScheduleState tracks the current state of each schedule (0=Down, 1=Up, 2=WarmingUp)
 	ScheduleState = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "lightsout_schedule_state",
-			Help: "Current state of schedule (1=Up, 0=Down)",
+			Help: "Current state of schedule (0=Down, 1=Up, 2=WarmingUp)",
 		},
 		[]string{"schedule"},
 	)

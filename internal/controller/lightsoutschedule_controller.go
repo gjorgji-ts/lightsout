@@ -207,7 +207,9 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Record metrics
 	stateValue := float64(0)
-	if schedule.Status.State == lightsoutv1alpha1.ScheduleStateUp {
+	if stillWarmingUp {
+		stateValue = 2
+	} else if schedule.Status.State == lightsoutv1alpha1.ScheduleStateUp {
 		stateValue = 1
 	}
 	ScheduleState.WithLabelValues(schedule.Name).Set(stateValue)
