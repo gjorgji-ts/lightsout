@@ -598,7 +598,7 @@ func TestReconcile_ArgoCDUpscale(t *testing.T) {
 		t.Errorf("deployment replicas = %d, want 3", *updatedDeploy.Spec.Replicas)
 	}
 
-	// Verify ArgoCD app labels were removed
+	// Verify ArgoCD app transitioned to warming-up (not yet removed — pods aren't ready)
 	var updatedApp unstructured.Unstructured
 	updatedApp.SetGroupVersionKind(schema.GroupVersionKind{
 		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
@@ -607,11 +607,359 @@ func TestReconcile_ArgoCDUpscale(t *testing.T) {
 		t.Fatalf("failed to get ArgoCD app: %v", err)
 	}
 	labels := updatedApp.GetLabels()
-	if _, exists := labels[constants.StateLabel]; exists {
-		t.Errorf("ArgoCD app state label should be removed after upscale")
+	if labels[constants.StateLabel] != constants.StateWarmingUp {
+		t.Errorf("ArgoCD app state label = %q, want %q", labels[constants.StateLabel], constants.StateWarmingUp)
 	}
-	if _, exists := labels[constants.ManagedByLabel]; exists {
-		t.Errorf("ArgoCD app managed-by label should be removed after upscale")
+	if labels[constants.ManagedByLabel] != "dev-schedule" {
+		t.Errorf("ArgoCD app managed-by label = %q, want %q", labels[constants.ManagedByLabel], "dev-schedule")
+	}
+	if _, exists := updatedApp.GetAnnotations()[constants.WarmingUpSinceAnnotation]; !exists {
+		t.Errorf("ArgoCD app should have warming-up-since annotation")
+	}
+}
+
+func TestReconcile_ArgoCDWarmupComplete(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	fixedNow := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	// Deployment: already scaled up by a previous reconcile with replicas ready
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Status:     appsv1.DeploymentStatus{ReadyReplicas: 3},
+	}
+
+	// ArgoCD app in warming-up state
+	argoApp := newArgoCDAppWithAnnotations("dev-app",
+		map[string]string{
+			constants.StateLabel:     constants.StateWarmingUp,
+			constants.ManagedByLabel: "dev-schedule",
+		},
+		map[string]string{
+			constants.WarmingUpSinceAnnotation: fixedNow.Add(-1 * time.Minute).UTC().Format(time.RFC3339),
+		},
+	)
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, argoApp, schedule).
+		WithStatusSubresource(schedule, deploy).
+		Build()
+
+	// Seed ready status so CheckWorkloadReadiness sees the deployment as healthy
+	deploy.Status.ReadyReplicas = 3
+	if err := fakeClient.Status().Update(context.Background(), deploy); err != nil {
+		t.Fatalf("failed to set deploy status: %v", err)
+	}
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			return fixedNow
+		},
+	}
+
+	// First reconcile adds finalizer
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: "dev-schedule"}})
+	// Second reconcile: Up state, ArgoCD app in warming-up — readiness passes, labels cleared
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: "dev-schedule"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// ArgoCD app should now have labels removed (pods are ready)
+	var updatedApp unstructured.Unstructured
+	updatedApp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(argoApp), &updatedApp); err != nil {
+		t.Fatalf("failed to get ArgoCD app: %v", err)
+	}
+	if _, exists := updatedApp.GetLabels()[constants.StateLabel]; exists {
+		t.Errorf("ArgoCD app state label should be removed after warmup complete")
+	}
+	if _, exists := updatedApp.GetAnnotations()[constants.WarmingUpSinceAnnotation]; exists {
+		t.Errorf("warming-up-since annotation should be removed after warmup complete")
+	}
+
+	// Requeue should be back to the normal transition interval (~8h until next downscale at 18:00).
+	// Accept a ±1 minute tolerance for computation overhead.
+	expectedRequeue := 8 * time.Hour
+	tolerance := time.Minute
+	if result.RequeueAfter < expectedRequeue-tolerance || result.RequeueAfter > expectedRequeue+tolerance {
+		t.Errorf("requeue after warmup complete = %v, want ~%v (±%v)", result.RequeueAfter, expectedRequeue, tolerance)
+	}
+}
+
+func TestReconcile_ArgoCDWarmupTimeout(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	fixedNow := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+	warmupTimeout := metav1.Duration{Duration: 2 * time.Minute}
+
+	// Deployment: scaled up but pods NOT ready (still warming up)
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web",
+			Namespace: "dev",
+			Labels:    map[string]string{constants.ManagedByLabel: "dev-schedule"},
+			Annotations: map[string]string{
+				constants.ManagedByAnnotation: "dev-schedule",
+			},
+		},
+		Spec:   appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: 0},
+	}
+
+	// ArgoCD app in warming-up — started 5 minutes ago (past the 2m timeout)
+	argoApp := newArgoCDAppWithAnnotations("dev-app",
+		map[string]string{
+			constants.StateLabel:     constants.StateWarmingUp,
+			constants.ManagedByLabel: "dev-schedule",
+		},
+		map[string]string{
+			constants.WarmingUpSinceAnnotation: fixedNow.Add(-5 * time.Minute).UTC().Format(time.RFC3339),
+		},
+	)
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{
+				Namespace:     "argocd",
+				WarmupTimeout: &warmupTimeout,
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, argoApp, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			return fixedNow
+		},
+	}
+
+	// First reconcile adds finalizer
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: "dev-schedule"}})
+	// Second reconcile: timeout elapsed, labels should be removed regardless
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: "dev-schedule"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	var updatedApp unstructured.Unstructured
+	updatedApp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(argoApp), &updatedApp); err != nil {
+		t.Fatalf("failed to get ArgoCD app: %v", err)
+	}
+	if _, exists := updatedApp.GetLabels()[constants.StateLabel]; exists {
+		t.Errorf("ArgoCD app state label should be removed after timeout")
+	}
+}
+
+func TestReconcile_ArgoCDWarmupRequeue(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	fixedNow := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	// Deployment: scaled up but pods NOT ready
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web",
+			Namespace: "dev",
+			Labels:    map[string]string{constants.ManagedByLabel: "dev-schedule"},
+			Annotations: map[string]string{
+				constants.ManagedByAnnotation: "dev-schedule",
+			},
+		},
+		Spec:   appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Status: appsv1.DeploymentStatus{ReadyReplicas: 0},
+	}
+
+	// ArgoCD app in warming-up — just started
+	argoApp := newArgoCDAppWithAnnotations("dev-app",
+		map[string]string{
+			constants.StateLabel:     constants.StateWarmingUp,
+			constants.ManagedByLabel: "dev-schedule",
+		},
+		map[string]string{
+			constants.WarmingUpSinceAnnotation: fixedNow.Add(-10 * time.Second).UTC().Format(time.RFC3339),
+		},
+	)
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, argoApp, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			return fixedNow
+		},
+	}
+
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: "dev-schedule"}})
+	result, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: "dev-schedule"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// Should requeue at WarmupCheckInterval since warming-up is still in progress
+	if result.RequeueAfter != constants.WarmupCheckInterval {
+		t.Errorf("requeue = %v, want WarmupCheckInterval (%v)", result.RequeueAfter, constants.WarmupCheckInterval)
+	}
+}
+
+func TestReconcile_ArgoCDDownscaleDuringWarmup(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	fixedNow := time.Date(2025, 1, 15, 19, 0, 0, 0, time.UTC) // 7 PM = downscale
+
+	// Deployment with 3 replicas (just became "up" but we're now downscaling again)
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+
+	// ArgoCD app still in warming-up state
+	argoApp := newArgoCDAppWithAnnotations("dev-app",
+		map[string]string{
+			constants.StateLabel:     constants.StateWarmingUp,
+			constants.ManagedByLabel: "dev-schedule",
+		},
+		map[string]string{
+			constants.WarmingUpSinceAnnotation: fixedNow.Add(-1 * time.Minute).UTC().Format(time.RFC3339),
+		},
+	)
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, argoApp, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			return fixedNow
+		},
+	}
+
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: "dev-schedule"}})
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: "dev-schedule"}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// ArgoCD app should transition from warming-up → down cleanly
+	var updatedApp unstructured.Unstructured
+	updatedApp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(argoApp), &updatedApp); err != nil {
+		t.Fatalf("failed to get ArgoCD app: %v", err)
+	}
+	if updatedApp.GetLabels()[constants.StateLabel] != constants.StateDown {
+		t.Errorf("ArgoCD app state = %q, want %q", updatedApp.GetLabels()[constants.StateLabel], constants.StateDown)
+	}
+	if _, exists := updatedApp.GetAnnotations()[constants.WarmingUpSinceAnnotation]; exists {
+		t.Errorf("warming-up-since annotation should be removed when downscaling")
 	}
 }
 

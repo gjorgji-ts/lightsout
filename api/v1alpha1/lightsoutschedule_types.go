@@ -98,6 +98,14 @@ type ArgoCDConfig struct {
 	// +kubebuilder:default=argocd
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+
+	// WarmupTimeout is how long to keep the warming-up label on ArgoCD Application
+	// CRDs after upscale before removing it regardless of pod readiness.
+	// This prevents ArgoCD alerts from firing while pods are starting up.
+	// Defaults to 10 minutes.
+	// +kubebuilder:default="10m"
+	// +optional
+	WarmupTimeout *metav1.Duration `json:"warmupTimeout,omitempty"`
 }
 
 // LightsOutScheduleSpec defines the desired state of LightsOutSchedule
