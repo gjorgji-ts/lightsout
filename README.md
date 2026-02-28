@@ -1,5 +1,10 @@
 # LightsOut
 
+[![Build](https://github.com/gjorgji-ts/lightsout/actions/workflows/main-release.yml/badge.svg)](https://github.com/gjorgji-ts/lightsout/actions/workflows/main-release.yml)
+[![Release](https://img.shields.io/github/v/release/gjorgji-ts/lightsout)](https://github.com/gjorgji-ts/lightsout/releases/latest)
+[![License](https://img.shields.io/github/license/gjorgji-ts/lightsout)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/gjorgji-ts/lightsout)](https://goreportcard.com/report/github.com/gjorgji-ts/lightsout)
+
 LightsOut is a Kubernetes operator that automatically scales down workloads during off-hours and restores them during business hours. This helps platform engineering teams **save over 60% on development and staging cluster costs**.
 
 Define schedules as custom resources, and LightsOut takes care of the rest. You can scale Deployments, StatefulSets, and CronJobs across namespaces according to your configured timetable without any application changes. Original replica counts are automatically preserved and restored.

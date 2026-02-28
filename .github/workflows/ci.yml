@@ -5,9 +5,9 @@ on:
     branches:
       - main
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   build-test-lint:
     uses: ./.github/workflows/build-test-lint.yml
-
