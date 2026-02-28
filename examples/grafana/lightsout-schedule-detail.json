@@ -38,13 +38,14 @@
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            { "options": { "0": { "text": "Down", "color": "orange" }, "1": { "text": "Up", "color": "green" } }, "type": "value" }
+            { "options": { "0": { "text": "Down", "color": "orange" }, "1": { "text": "Up", "color": "green" }, "2": { "text": "Warming Up", "color": "yellow" } }, "type": "value" }
           ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "orange", "value": null },
-              { "color": "green", "value": 1 }
+              { "color": "green", "value": 1 },
+              { "color": "yellow", "value": 2 }
             ]
           },
           "color": { "mode": "thresholds" }
@@ -233,11 +234,11 @@
             "stacking": { "mode": "none" }
           },
           "mappings": [
-            { "options": { "0": { "text": "Down" }, "1": { "text": "Up" } }, "type": "value" }
+            { "options": { "0": { "text": "Down" }, "1": { "text": "Up" }, "2": { "text": "Warming Up" } }, "type": "value" }
           ],
           "color": { "mode": "palette-classic" },
           "min": 0,
-          "max": 1
+          "max": 2
         },
         "overrides": []
       },
@@ -659,5 +660,5 @@
   "timezone": "",
   "title": "LightsOut - Schedule Detail",
   "uid": "lightsout-schedule-detail",
-  "version": 1
+  "version": 2
 }

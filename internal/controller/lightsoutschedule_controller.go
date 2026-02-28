@@ -190,24 +190,13 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// Record events for scaling operations
-	if r.Recorder != nil {
-		if !scaleUp && stats.DeploymentsScaled+stats.StatefulSetsScaled+stats.CronJobsSuspended > 0 {
-			r.Recorder.Eventf(&schedule, nil, corev1.EventTypeNormal, "ScaledDown", "ScaleDown",
-				"Scaled down %d deployments, %d statefulsets, suspended %d cronjobs across %d namespaces",
-				stats.DeploymentsScaled, stats.StatefulSetsScaled, stats.CronJobsSuspended, len(namespaces))
-		}
-
-		totalManaged := stats.DeploymentsManaged + stats.StatefulSetsManaged + stats.CronJobsManaged
-		if scaleUp && totalManaged > 0 {
-			r.Recorder.Eventf(&schedule, nil, corev1.EventTypeNormal, "ScaledUp", "ScaleUp",
-				"Scaled up workloads across %d namespaces (managing %d deployments, %d statefulsets, %d cronjobs)",
-				len(namespaces), stats.DeploymentsManaged, stats.StatefulSetsManaged, stats.CronJobsManaged)
-		}
-	}
+	r.recordScalingEvents(&schedule, scaleUp, stats, namespaces)
 
 	// Record metrics
 	stateValue := float64(0)
-	if schedule.Status.State == lightsoutv1alpha1.ScheduleStateUp {
+	if stillWarmingUp {
+		stateValue = 2
+	} else if schedule.Status.State == lightsoutv1alpha1.ScheduleStateUp {
 		stateValue = 1
 	}
 	ScheduleState.WithLabelValues(schedule.Name).Set(stateValue)
@@ -222,39 +211,59 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	LastReconcileTime.WithLabelValues(schedule.Name).SetToCurrentTime()
 
 	// Calculate requeue time
-	var timeUntilNextTransition time.Duration
-	if scaleUp {
-		timeUntilNextTransition = period.NextDownscale.Sub(now)
-	} else {
-		timeUntilNextTransition = period.NextUpscale.Sub(now)
-	}
-
-	var requeueAfter time.Duration
-	if scaleResult.batchLimitReached {
-		// More workloads to process — requeue after batch delay, but not later
-		// than the next period transition (so we don't miss direction changes).
-		requeueAfter = timeUntilNextTransition
-		if rateLimit != nil && rateLimit.DelayBetweenBatches != nil {
-			delay := rateLimit.DelayBetweenBatches.Duration
-			if delay < requeueAfter {
-				requeueAfter = delay
-			}
-		}
-		// Small floor to prevent zero/negative from stalling the batch
-		requeueAfter = max(requeueAfter, time.Second)
-	} else if stillWarmingUp {
-		// ArgoCD apps are warming up — poll readiness at WarmupCheckInterval,
-		// but no later than the next period transition.
-		requeueAfter = min(constants.WarmupCheckInterval, timeUntilNextTransition)
-		requeueAfter = max(requeueAfter, time.Second)
-	} else {
-		requeueAfter = timeUntilNextTransition
-		// Defensive floor for the idle path — next transition is typically hours away
-		requeueAfter = max(requeueAfter, time.Minute)
-	}
+	requeueAfter := calculateRequeueAfter(period, scaleUp, scaleResult, rateLimit, stillWarmingUp, now)
 
 	logger.Info("reconciliation complete", "requeueAfter", requeueAfter, "batchLimitReached", scaleResult.batchLimitReached)
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// recordScalingEvents emits Kubernetes events for completed scaling operations.
+func (r *LightsOutScheduleReconciler) recordScalingEvents(schedule *lightsoutv1alpha1.LightsOutSchedule, scaleUp bool, stats lightsoutv1alpha1.WorkloadStats, namespaces []string) {
+	if r.Recorder == nil {
+		return
+	}
+	if !scaleUp && stats.DeploymentsScaled+stats.StatefulSetsScaled+stats.CronJobsSuspended > 0 {
+		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "ScaledDown", "ScaleDown",
+			"Scaled down %d deployments, %d statefulsets, suspended %d cronjobs across %d namespaces",
+			stats.DeploymentsScaled, stats.StatefulSetsScaled, stats.CronJobsSuspended, len(namespaces))
+	}
+	totalManaged := stats.DeploymentsManaged + stats.StatefulSetsManaged + stats.CronJobsManaged
+	if scaleUp && totalManaged > 0 {
+		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "ScaledUp", "ScaleUp",
+			"Scaled up workloads across %d namespaces (managing %d deployments, %d statefulsets, %d cronjobs)",
+			len(namespaces), stats.DeploymentsManaged, stats.StatefulSetsManaged, stats.CronJobsManaged)
+	}
+}
+
+// calculateRequeueAfter returns how long to wait before the next reconciliation.
+// Batch-limited runs requeue after the batch delay (capped at the next transition).
+// Warming-up runs requeue at WarmupCheckInterval. Otherwise, requeue at the next transition.
+func calculateRequeueAfter(period *PeriodResult, scaleUp bool, scaleResult *scaleWorkloadsResult, rateLimit *lightsoutv1alpha1.RateLimitConfig, stillWarmingUp bool, now time.Time) time.Duration {
+	var timeUntilNext time.Duration
+	if scaleUp {
+		timeUntilNext = period.NextDownscale.Sub(now)
+	} else {
+		timeUntilNext = period.NextUpscale.Sub(now)
+	}
+
+	if scaleResult.batchLimitReached {
+		// More workloads to process — requeue after batch delay, but not later
+		// than the next period transition (so we don't miss direction changes).
+		requeueAfter := timeUntilNext
+		if rateLimit != nil && rateLimit.DelayBetweenBatches != nil {
+			if delay := rateLimit.DelayBetweenBatches.Duration; delay < requeueAfter {
+				requeueAfter = delay
+			}
+		}
+		return max(requeueAfter, time.Second)
+	}
+	if stillWarmingUp {
+		// ArgoCD apps are warming up — poll readiness at WarmupCheckInterval,
+		// but no later than the next period transition.
+		return max(min(constants.WarmupCheckInterval, timeUntilNext), time.Second)
+	}
+	// Defensive floor for the idle path — next transition is typically hours away.
+	return max(timeUntilNext, time.Minute)
 }
 
 // scaleWorkloadsResult contains the result of scaling all workloads

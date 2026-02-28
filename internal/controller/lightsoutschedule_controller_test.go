@@ -19,11 +19,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -713,6 +716,11 @@ func TestReconcile_ArgoCDWarmupComplete(t *testing.T) {
 	if result.RequeueAfter < expectedRequeue-tolerance || result.RequeueAfter > expectedRequeue+tolerance {
 		t.Errorf("requeue after warmup complete = %v, want ~%v (±%v)", result.RequeueAfter, expectedRequeue, tolerance)
 	}
+
+	// Metric must return to Up (1), not remain at WarmingUp (2)
+	if got := testutil.ToFloat64(ScheduleState.WithLabelValues("dev-schedule")); got != 1 {
+		t.Errorf("schedule state metric = %v, want 1 (Up) after warmup complete", got)
+	}
 }
 
 func TestReconcile_ArgoCDWarmupTimeout(t *testing.T) {
@@ -881,6 +889,11 @@ func TestReconcile_ArgoCDWarmupRequeue(t *testing.T) {
 	if result.RequeueAfter != constants.WarmupCheckInterval {
 		t.Errorf("requeue = %v, want WarmupCheckInterval (%v)", result.RequeueAfter, constants.WarmupCheckInterval)
 	}
+
+	// Metric must reflect warming-up state (2), not just Up (1)
+	if got := testutil.ToFloat64(ScheduleState.WithLabelValues("dev-schedule")); got != 2 {
+		t.Errorf("schedule state metric = %v, want 2 (WarmingUp)", got)
+	}
 }
 
 func TestReconcile_ArgoCDDownscaleDuringWarmup(t *testing.T) {
@@ -1041,6 +1054,191 @@ func TestReconcile_ArgoCDDisabled(t *testing.T) {
 	if _, exists := labels[constants.StateLabel]; exists {
 		t.Errorf("ArgoCD app should not be labeled when ArgoCD feature is disabled")
 	}
+}
+
+func TestCalculateRequeueAfter(t *testing.T) {
+	now := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+
+	// During "Up" period, next transition is downscale; during "Down", it's upscale.
+	// For these tests we drive via scaleUp flag and the corresponding field.
+	nextTransition := now.Add(11 * time.Hour) // far away — 11h
+	nearTransition := now.Add(10 * time.Second)
+
+	makePeriod := func(scaleUp bool, next time.Time) *PeriodResult {
+		p := &PeriodResult{}
+		if scaleUp {
+			p.NextDownscale = next
+			p.NextUpscale = next.Add(6 * time.Hour)
+		} else {
+			p.NextUpscale = next
+			p.NextDownscale = next.Add(6 * time.Hour)
+		}
+		return p
+	}
+
+	t.Run("batch limit reached, delay < transition → uses delay", func(t *testing.T) {
+		delay := metav1.Duration{Duration: 30 * time.Second}
+		rl := &lightsoutv1alpha1.RateLimitConfig{DelayBetweenBatches: &delay}
+		result := calculateRequeueAfter(
+			makePeriod(false, nextTransition), false,
+			&scaleWorkloadsResult{batchLimitReached: true}, rl, false, now,
+		)
+		if result != 30*time.Second {
+			t.Errorf("got %v, want 30s", result)
+		}
+	})
+
+	t.Run("batch limit reached, delay > transition → uses transition", func(t *testing.T) {
+		delay := metav1.Duration{Duration: 5 * time.Minute}
+		rl := &lightsoutv1alpha1.RateLimitConfig{DelayBetweenBatches: &delay}
+		result := calculateRequeueAfter(
+			makePeriod(false, nearTransition), false,
+			&scaleWorkloadsResult{batchLimitReached: true}, rl, false, now,
+		)
+		if result != 10*time.Second {
+			t.Errorf("got %v, want 10s (transition sooner than batch delay)", result)
+		}
+	})
+
+	t.Run("batch limit reached, no delay configured → uses transition", func(t *testing.T) {
+		result := calculateRequeueAfter(
+			makePeriod(false, nextTransition), false,
+			&scaleWorkloadsResult{batchLimitReached: true}, nil, false, now,
+		)
+		if result != 11*time.Hour {
+			t.Errorf("got %v, want 11h (no delay, use transition)", result)
+		}
+	})
+
+	t.Run("batch limit reached, transition in the past → 1s floor", func(t *testing.T) {
+		past := now.Add(-1 * time.Minute)
+		result := calculateRequeueAfter(
+			makePeriod(false, past), false,
+			&scaleWorkloadsResult{batchLimitReached: true}, nil, false, now,
+		)
+		if result != time.Second {
+			t.Errorf("got %v, want 1s floor", result)
+		}
+	})
+
+	t.Run("warming up, WarmupCheckInterval < transition → uses WarmupCheckInterval", func(t *testing.T) {
+		result := calculateRequeueAfter(
+			makePeriod(true, nextTransition), true,
+			&scaleWorkloadsResult{}, nil, true, now,
+		)
+		if result != constants.WarmupCheckInterval {
+			t.Errorf("got %v, want WarmupCheckInterval (%v)", result, constants.WarmupCheckInterval)
+		}
+	})
+
+	t.Run("warming up, transition < WarmupCheckInterval → uses transition", func(t *testing.T) {
+		result := calculateRequeueAfter(
+			makePeriod(true, nearTransition), true,
+			&scaleWorkloadsResult{}, nil, true, now,
+		)
+		if result != 10*time.Second {
+			t.Errorf("got %v, want 10s (transition sooner than warmup interval)", result)
+		}
+	})
+
+	t.Run("idle, transition far away → uses transition", func(t *testing.T) {
+		result := calculateRequeueAfter(
+			makePeriod(true, nextTransition), true,
+			&scaleWorkloadsResult{}, nil, false, now,
+		)
+		if result != 11*time.Hour {
+			t.Errorf("got %v, want 11h", result)
+		}
+	})
+
+	t.Run("idle, transition < 1m → 1m floor", func(t *testing.T) {
+		result := calculateRequeueAfter(
+			makePeriod(true, nearTransition), true,
+			&scaleWorkloadsResult{}, nil, false, now,
+		)
+		if result != time.Minute {
+			t.Errorf("got %v, want 1m floor", result)
+		}
+	})
+}
+
+func TestRecordScalingEvents(t *testing.T) {
+	makeSchedule := func() *lightsoutv1alpha1.LightsOutSchedule {
+		return &lightsoutv1alpha1.LightsOutSchedule{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
+		}
+	}
+	namespaces := []string{"ns1", "ns2"}
+
+	t.Run("nil recorder is a no-op", func(t *testing.T) {
+		r := &LightsOutScheduleReconciler{}
+		// Should not panic
+		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
+			DeploymentsScaled: 2,
+		}, namespaces)
+	})
+
+	t.Run("downscale with workloads emits ScaledDown event", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
+			DeploymentsScaled:  2,
+			StatefulSetsScaled: 1,
+			CronJobsSuspended:  0,
+		}, namespaces)
+		if len(rec.Events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(rec.Events))
+		}
+		ev := <-rec.Events
+		if !containsAll(ev, "ScaledDown", "2", "1") {
+			t.Errorf("unexpected event content: %s", ev)
+		}
+	})
+
+	t.Run("downscale with no workloads emits no event", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{}, namespaces)
+		if len(rec.Events) != 0 {
+			t.Errorf("expected no events, got %d", len(rec.Events))
+		}
+	})
+
+	t.Run("upscale with managed workloads emits ScaledUp event", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordScalingEvents(makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{
+			DeploymentsManaged:  3,
+			StatefulSetsManaged: 1,
+			CronJobsManaged:     2,
+		}, namespaces)
+		if len(rec.Events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(rec.Events))
+		}
+		ev := <-rec.Events
+		if !containsAll(ev, "ScaledUp", "3", "1", "2") {
+			t.Errorf("unexpected event content: %s", ev)
+		}
+	})
+
+	t.Run("upscale with no managed workloads emits no event", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordScalingEvents(makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{}, namespaces)
+		if len(rec.Events) != 0 {
+			t.Errorf("expected no events, got %d", len(rec.Events))
+		}
+	})
+}
+
+// containsAll returns true if s contains all the given substrings.
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 var _ = Describe("LightsOutSchedule Controller", func() {

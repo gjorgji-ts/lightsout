@@ -49,6 +49,13 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 helm-crds: manifests ## Sync generated CRDs into the Helm chart directory.
 	cp config/crd/bases/*.yaml charts/lightsout/crds/
 
+.PHONY: helm-rbac-check
+helm-rbac-check: ## Verify Helm chart ClusterRole rules are in sync with config/rbac/role.yaml.
+	python3 hack/check-helm-rbac.py
+
+.PHONY: helm-sync
+helm-sync: helm-crds helm-rbac-check ## Sync CRDs and verify RBAC rules into the Helm chart (run after 'make manifests').
+
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
@@ -93,7 +100,7 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
-lint: golangci-lint ## Run golangci-lint linter
+lint: golangci-lint helm-rbac-check ## Run golangci-lint linter and verify Helm chart RBAC rules.
 	"$(GOLANGCI_LINT)" run
 
 .PHONY: lint-fix

@@ -54,6 +54,19 @@ rules:
       - watch
       - patch
       - update
+  {{- if .Values.rbac.argocd }}
+  # ArgoCD Applications
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - applications
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+      - update
+  {{- end }}
   # CronJobs
   - apiGroups:
       - batch

@@ -18,6 +18,9 @@ serviceAccount:
 
 rbac:
   create: true
+  # -- Grant permissions to list/watch/patch ArgoCD Application resources.
+  # -- Enable only if using the spec.argoCD integration.
+  argocd: false
 
 resources:
   limits:

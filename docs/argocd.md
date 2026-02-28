@@ -224,4 +224,12 @@ The ArgoCD integration requires these additional cluster-wide permissions:
 |----------|-----------|-------|
 | Applications | argoproj.io | get, list, watch, update, patch |
 
-These permissions are always requested in the ClusterRole but are unused if ArgoCD is not installed or the feature is not enabled.
+These permissions are **not** included by default. You must opt in by setting `rbac.argocd: true` in your Helm values:
+
+```yaml
+rbac:
+  create: true
+  argocd: true
+```
+
+Without this, the controller will not have permission to list or label ArgoCD Application CRDs, and ArgoCD integration will silently fail even if `spec.argoCD` is set on a schedule. Errors are emitted as Kubernetes warning events on the schedule resource.
