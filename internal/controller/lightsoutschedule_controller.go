@@ -235,6 +235,61 @@ func (r *LightsOutScheduleReconciler) recordScalingEvents(schedule *lightsoutv1a
 	}
 }
 
+// recordWorkloadEvent emits a Kubernetes event directly on the given workload object.
+// It is a no-op when Recorder is nil, result is nil, result is skipped, or the
+// workload's typed pointer field is nil.
+func (r *LightsOutScheduleReconciler) recordWorkloadEvent(w Workload, scheduleName string, scaleUp bool, result *ScaleResult) {
+	if r.Recorder == nil || result == nil || result.Skipped {
+		return
+	}
+
+	var reason, action, message string
+	var obj runtime.Object
+
+	switch w.Type {
+	case WorkloadTypeDeployment:
+		if w.Deployment == nil {
+			return
+		}
+		obj = w.Deployment
+		if scaleUp {
+			reason, action = "ScaledUp", "ScaleUp"
+			message = fmt.Sprintf("Scaled up by LightsOut schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
+		} else {
+			reason, action = "ScaledDown", "ScaleDown"
+			message = fmt.Sprintf("Scaled down by LightsOut schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
+		}
+	case WorkloadTypeStatefulSet:
+		if w.StatefulSet == nil {
+			return
+		}
+		obj = w.StatefulSet
+		if scaleUp {
+			reason, action = "ScaledUp", "ScaleUp"
+			message = fmt.Sprintf("Scaled up by LightsOut schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
+		} else {
+			reason, action = "ScaledDown", "ScaleDown"
+			message = fmt.Sprintf("Scaled down by LightsOut schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
+		}
+	case WorkloadTypeCronJob:
+		if w.CronJob == nil {
+			return
+		}
+		obj = w.CronJob
+		if scaleUp {
+			reason, action = "Resumed", "Resume"
+			message = fmt.Sprintf("Resumed by LightsOut schedule %q", scheduleName)
+		} else {
+			reason, action = "Suspended", "Suspend"
+			message = fmt.Sprintf("Suspended by LightsOut schedule %q", scheduleName)
+		}
+	default:
+		return
+	}
+
+	r.Recorder.Eventf(obj, nil, corev1.EventTypeNormal, reason, action, "%s", message)
+}
+
 // calculateRequeueAfter returns how long to wait before the next reconciliation.
 // Batch-limited runs requeue after the batch delay (capped at the next transition).
 // Warming-up runs requeue at WarmupCheckInterval. Otherwise, requeue at the next transition.
@@ -368,6 +423,7 @@ func (r *LightsOutScheduleReconciler) scaleWorkloads(
 		ScalingOperationsTotal.WithLabelValues(schedule.Name, w.Namespace, string(w.Type), operation).Inc()
 		ScalingWorkloadsProcessed.WithLabelValues(schedule.Name, direction, "success").Inc()
 		totalProcessed++
+		r.recordWorkloadEvent(w, schedule.Name, scaleUp, scaleResult)
 
 		if budget > 0 {
 			budget--
@@ -550,8 +606,11 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 			restoreErrors = append(restoreErrors, fmt.Sprintf("list deployments in %s: %v", ns, err))
 		} else {
 			for i := range deployments {
-				if _, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true); err != nil {
+				result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true)
+				if err != nil {
 					restoreErrors = append(restoreErrors, fmt.Sprintf("deployment %s/%s: %v", ns, deployments[i].Name, err))
+				} else {
+					r.recordWorkloadEvent(WorkloadFromDeployment(&deployments[i]), schedule.Name, true, result)
 				}
 			}
 		}
@@ -562,8 +621,11 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 			restoreErrors = append(restoreErrors, fmt.Sprintf("list statefulsets in %s: %v", ns, err))
 		} else {
 			for i := range statefulsets {
-				if _, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true); err != nil {
+				result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true)
+				if err != nil {
 					restoreErrors = append(restoreErrors, fmt.Sprintf("statefulset %s/%s: %v", ns, statefulsets[i].Name, err))
+				} else {
+					r.recordWorkloadEvent(WorkloadFromStatefulSet(&statefulsets[i]), schedule.Name, true, result)
 				}
 			}
 		}
@@ -574,8 +636,11 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 			restoreErrors = append(restoreErrors, fmt.Sprintf("list cronjobs in %s: %v", ns, err))
 		} else {
 			for i := range cronjobs {
-				if _, err := ScaleCronJob(ctx, r.Client, &cronjobs[i], schedule.Name, true); err != nil {
+				result, err := ScaleCronJob(ctx, r.Client, &cronjobs[i], schedule.Name, true)
+				if err != nil {
 					restoreErrors = append(restoreErrors, fmt.Sprintf("cronjob %s/%s: %v", ns, cronjobs[i].Name, err))
+				} else {
+					r.recordWorkloadEvent(WorkloadFromCronJob(&cronjobs[i]), schedule.Name, true, result)
 				}
 			}
 		}

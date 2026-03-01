@@ -1231,6 +1231,117 @@ func TestRecordScalingEvents(t *testing.T) {
 	})
 }
 
+func TestRecordWorkloadEvent(t *testing.T) {
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-deploy", Namespace: "ns1"},
+	}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-sts", Namespace: "ns1"},
+	}
+	cj := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-cj", Namespace: "ns1"},
+	}
+
+	t.Run("nil recorder is a no-op", func(t *testing.T) {
+		r := &LightsOutScheduleReconciler{}
+		// Should not panic
+		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
+	})
+
+	t.Run("skipped result emits no event", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, &ScaleResult{Skipped: true})
+		if len(rec.Events) != 0 {
+			t.Errorf("expected no events for skipped result, got %d", len(rec.Events))
+		}
+	})
+
+	t.Run("nil result is a no-op", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, nil)
+		if len(rec.Events) != 0 {
+			t.Errorf("expected no events for nil result, got %d", len(rec.Events))
+		}
+	})
+
+	t.Run("nil workload pointer is a no-op", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		w := Workload{Type: WorkloadTypeDeployment} // Deployment field is nil
+		r.recordWorkloadEvent(w, "sched", false, &ScaleResult{PreviousValue: "1", NewValue: "0"})
+		if len(rec.Events) != 0 {
+			t.Errorf("expected no events for nil workload object, got %d", len(rec.Events))
+		}
+	})
+
+	t.Run("deployment scale down emits ScaledDown event with replica counts", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "my-schedule", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
+		if len(rec.Events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(rec.Events))
+		}
+		ev := <-rec.Events
+		if !containsAll(ev, "ScaledDown", "my-schedule", "3", "0") {
+			t.Errorf("unexpected event: %s", ev)
+		}
+	})
+
+	t.Run("deployment scale up emits ScaledUp event with replica counts", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "my-schedule", true, &ScaleResult{PreviousValue: "0", NewValue: "3"})
+		if len(rec.Events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(rec.Events))
+		}
+		ev := <-rec.Events
+		if !containsAll(ev, "ScaledUp", "my-schedule", "0", "3") {
+			t.Errorf("unexpected event: %s", ev)
+		}
+	})
+
+	t.Run("statefulset scale down emits ScaledDown event", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordWorkloadEvent(WorkloadFromStatefulSet(sts), "my-schedule", false, &ScaleResult{PreviousValue: "2", NewValue: "0"})
+		if len(rec.Events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(rec.Events))
+		}
+		ev := <-rec.Events
+		if !containsAll(ev, "ScaledDown", "my-schedule", "2", "0") {
+			t.Errorf("unexpected event: %s", ev)
+		}
+	})
+
+	t.Run("cronjob suspend emits Suspended event", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordWorkloadEvent(WorkloadFromCronJob(cj), "my-schedule", false, &ScaleResult{PreviousValue: "false", NewValue: "true"})
+		if len(rec.Events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(rec.Events))
+		}
+		ev := <-rec.Events
+		if !containsAll(ev, "Suspended", "my-schedule") {
+			t.Errorf("unexpected event: %s", ev)
+		}
+	})
+
+	t.Run("cronjob resume emits Resumed event", func(t *testing.T) {
+		rec := events.NewFakeRecorder(10)
+		r := &LightsOutScheduleReconciler{Recorder: rec}
+		r.recordWorkloadEvent(WorkloadFromCronJob(cj), "my-schedule", true, &ScaleResult{PreviousValue: "true", NewValue: "false"})
+		if len(rec.Events) != 1 {
+			t.Fatalf("expected 1 event, got %d", len(rec.Events))
+		}
+		ev := <-rec.Events
+		if !containsAll(ev, "Resumed", "my-schedule") {
+			t.Errorf("unexpected event: %s", ev)
+		}
+	})
+}
+
 // containsAll returns true if s contains all the given substrings.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
@@ -3292,3 +3403,173 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 		})
 	})
 })
+
+func TestScaleWorkloads_EmitsWorkloadEvents(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "deploy-1", Namespace: "ns1"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+	cj := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{Name: "cj-1", Namespace: "ns1"},
+		Spec:       batchv1.CronJobSpec{Suspend: ptr(false)},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(deploy, cj).
+		Build()
+
+	rec := events.NewFakeRecorder(10)
+	r := &LightsOutScheduleReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: rec,
+	}
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-schedule"},
+	}
+
+	_, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Expect one event per actually-scaled workload
+	if len(rec.Events) != 2 {
+		t.Fatalf("expected 2 workload events, got %d", len(rec.Events))
+	}
+
+	ev1 := <-rec.Events
+	ev2 := <-rec.Events
+
+	combined := ev1 + " " + ev2
+	if !strings.Contains(combined, "ScaledDown") {
+		t.Errorf("expected ScaledDown in events, got: %s | %s", ev1, ev2)
+	}
+	if !strings.Contains(combined, "Suspended") {
+		t.Errorf("expected Suspended in events, got: %s | %s", ev1, ev2)
+	}
+	if !strings.Contains(combined, "my-schedule") {
+		t.Errorf("expected schedule name in events, got: %s | %s", ev1, ev2)
+	}
+}
+
+func TestHandleDeletion_EmitsWorkloadEvents(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns1", Labels: map[string]string{"env": "test"}}}
+
+	// A deployment already scaled down by this schedule (has annotation)
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "deploy-1",
+			Namespace: "ns1",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "3",
+				constants.ManagedByAnnotation:        "my-schedule",
+			},
+			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "sts-1",
+			Namespace: "ns1",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "2",
+				constants.ManagedByAnnotation:        "my-schedule",
+			},
+			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
+		},
+		Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+	}
+
+	// A cronjob already suspended by this schedule
+	cj := &batchv1.CronJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "cj-1",
+			Namespace: "ns1",
+			Annotations: map[string]string{
+				constants.OriginalSuspendAnnotation: constants.SuspendedByLightsOut,
+				constants.ManagedByAnnotation:       "my-schedule",
+			},
+			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
+		},
+		Spec: batchv1.CronJobSpec{Suspend: ptr(true)},
+	}
+
+	now := metav1.Now()
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "my-schedule",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{constants.FinalizerName},
+		},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "test"},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, sts, cj, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	rec := events.NewFakeRecorder(10)
+	r := &LightsOutScheduleReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		Recorder: rec,
+	}
+
+	_, err := r.handleDeletion(context.Background(), schedule)
+	if err != nil {
+		t.Fatalf("handleDeletion failed: %v", err)
+	}
+
+	// Collect all events (workload events + the CleanupComplete event on the schedule)
+	var eventsReceived []string
+	for {
+		select {
+		case e := <-rec.Events:
+			eventsReceived = append(eventsReceived, e)
+		default:
+			goto done
+		}
+	}
+done:
+
+	scaledUpCount := 0
+	resumedCount := 0
+	for _, e := range eventsReceived {
+		if strings.Contains(e, "ScaledUp") {
+			scaledUpCount++
+		}
+		if strings.Contains(e, "Resumed") {
+			resumedCount++
+		}
+	}
+	if scaledUpCount != 2 {
+		t.Errorf("expected 2 ScaledUp events (deployment + statefulset), got %d; all events: %v", scaledUpCount, eventsReceived)
+	}
+	if resumedCount != 1 {
+		t.Errorf("expected 1 Resumed event (cronjob), got %d; all events: %v", resumedCount, eventsReceived)
+	}
+}
