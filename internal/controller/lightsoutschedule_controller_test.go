@@ -69,13 +69,15 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize: &batchSize,
+				},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "test"},
-			},
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize: &batchSize,
 			},
 		},
 	}
@@ -201,8 +203,10 @@ func TestScaleWorkloads_BatchLimitReached(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize: &batchSize,
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize: &batchSize,
+				},
 			},
 		},
 	}
@@ -268,8 +272,10 @@ func TestScaleWorkloads_SkippedDontConsumeBudget(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize: &batchSize,
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize: &batchSize,
+				},
 			},
 		},
 	}
@@ -361,14 +367,16 @@ func TestReconcile_RequeueDelayIsMinOfBatchDelayAndTransition(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule-requeue"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize:           &batchSize,
+					DelayBetweenBatches: &delay,
+				},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "requeue"},
-			},
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize:           &batchSize,
-				DelayBetweenBatches: &delay,
 			},
 		},
 	}
@@ -439,12 +447,14 @@ func TestReconcile_ArgoCDDownscale(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -556,12 +566,14 @@ func TestReconcile_ArgoCDUpscale(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -657,12 +669,14 @@ func TestReconcile_ArgoCDWarmupComplete(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -767,14 +781,16 @@ func TestReconcile_ArgoCDWarmupTimeout(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{
+					Namespace:     "argocd",
+					WarmupTimeout: &warmupTimeout,
+				},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
-			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{
-				Namespace:     "argocd",
-				WarmupTimeout: &warmupTimeout,
 			},
 		},
 	}
@@ -856,12 +872,14 @@ func TestReconcile_ArgoCDWarmupRequeue(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -931,12 +949,14 @@ func TestReconcile_ArgoCDDownscaleDuringWarmup(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -1000,12 +1020,14 @@ func TestReconcile_ArgoCDDisabled(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				// ArgoCD: nil — disabled
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			// ArgoCD: nil — disabled
 		},
 	}
 
@@ -1421,9 +1443,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-down",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *", // 6 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *", // 6 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test"},
 					},
@@ -1537,9 +1561,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-up",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 6 * * *",  // 6 AM daily
-					Downscale: "0 18 * * *", // 6 PM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 6 * * *",  // 6 AM daily
+						Downscale: "0 18 * * *", // 6 PM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-up"},
 					},
@@ -1645,10 +1671,12 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-suspended",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 23 * * *", // 11 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily - would be in "down" period
-					Timezone:  "UTC",
-					Suspend:   true, // Schedule is suspended
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 23 * * *", // 11 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily - would be in "down" period
+						Timezone:  "UTC",
+						Suspend:   true, // Schedule is suspended
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-suspended"},
 					},
@@ -1754,9 +1782,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-sts-down",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *", // 6 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *", // 6 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-sts"},
 					},
@@ -1871,9 +1901,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-sts-up",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 6 * * *",  // 6 AM daily
-					Downscale: "0 18 * * *", // 6 PM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 6 * * *",  // 6 AM daily
+						Downscale: "0 18 * * *", // 6 PM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-sts-up"},
 					},
@@ -1981,9 +2013,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-cj-down",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *", // 6 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *", // 6 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-cj"},
 					},
@@ -2098,9 +2132,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-cj-up",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 6 * * *",  // 6 AM daily
-					Downscale: "0 18 * * *", // 6 PM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 6 * * *",  // 6 AM daily
+						Downscale: "0 18 * * *", // 6 PM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-cj-up"},
 					},
@@ -2275,9 +2311,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-multi",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *", // 6 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *", // 6 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-multi"},
 					},
@@ -2378,9 +2416,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-finalizer",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 8 * * *",
-					Downscale: "0 18 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 8 * * *",
+						Downscale: "0 18 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-finalizer"},
 					},
@@ -2467,9 +2507,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-deletion",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-deletion"},
 					},
@@ -2602,9 +2644,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-transition",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 6 * * *",
-					Downscale: "0 18 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 6 * * *",
+						Downscale: "0 18 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-transition"},
 					},
@@ -2751,9 +2795,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-overlap-1",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-overlap"},
 					},
@@ -2802,9 +2848,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-overlap-2",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-overlap"},
 					},
@@ -2892,9 +2940,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-deleted-deploy",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-deleted-deploy"},
 					},
@@ -3010,9 +3060,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-rapid",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-rapid"},
 					},
@@ -3110,9 +3162,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-mid-suspend",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-mid-suspend"},
 					},
@@ -3302,9 +3356,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-multi-deploy",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-multi-deploy"},
 					},
@@ -3518,8 +3574,10 @@ func TestHandleDeletion_EmitsWorkloadEvents(t *testing.T) {
 			Finalizers:        []string{constants.FinalizerName},
 		},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "test"},
 			},

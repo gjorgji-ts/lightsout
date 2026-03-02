@@ -75,14 +75,16 @@ func TestLightsOutScheduleSpec_RateLimitFields(t *testing.T) {
 	delay := metav1.Duration{Duration: 5 * time.Second}
 
 	spec := LightsOutScheduleSpec{
-		Upscale:   "0 6 * * 1-5",
-		Downscale: "0 18 * * 1-5",
-		UpscaleRateLimit: &RateLimitConfig{
-			BatchSize:           &batchSize,
-			DelayBetweenBatches: &delay,
-		},
-		DownscaleRateLimit: &RateLimitConfig{
-			BatchSize: &batchSize,
+		LightsOutScheduleCore: LightsOutScheduleCore{
+			Upscale:   "0 6 * * 1-5",
+			Downscale: "0 18 * * 1-5",
+			UpscaleRateLimit: &RateLimitConfig{
+				BatchSize:           &batchSize,
+				DelayBetweenBatches: &delay,
+			},
+			DownscaleRateLimit: &RateLimitConfig{
+				BatchSize: &batchSize,
+			},
 		},
 	}
 
@@ -116,5 +118,18 @@ func TestLightsOutScheduleStatus_ScalingProgress(t *testing.T) {
 	}
 	if status.ScalingProgress.Completed != 75 {
 		t.Errorf("Completed = %d, want 75", status.ScalingProgress.Completed)
+	}
+}
+
+func TestLightsOutScheduleCore_IsEmbedded(t *testing.T) {
+	spec := LightsOutScheduleSpec{
+		LightsOutScheduleCore: LightsOutScheduleCore{
+			Upscale:   "0 6 * * *",
+			Downscale: "0 18 * * *",
+		},
+		Namespaces: []string{"test-ns"},
+	}
+	if spec.Upscale != "0 6 * * *" {
+		t.Errorf("expected promoted Upscale field to be accessible")
 	}
 }

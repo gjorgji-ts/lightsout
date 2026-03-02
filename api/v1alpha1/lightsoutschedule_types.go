@@ -108,8 +108,9 @@ type ArgoCDConfig struct {
 	WarmupTimeout *metav1.Duration `json:"warmupTimeout,omitempty"`
 }
 
-// LightsOutScheduleSpec defines the desired state of LightsOutSchedule
-type LightsOutScheduleSpec struct {
+// LightsOutScheduleCore contains the shared scheduling fields used by both
+// LightsOutSchedule and LightsOutNamespaceSchedule.
+type LightsOutScheduleCore struct {
 	// Upscale is the cron expression for when to scale workloads up
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -124,18 +125,6 @@ type LightsOutScheduleSpec struct {
 	// +kubebuilder:default="UTC"
 	// +optional
 	Timezone string `json:"timezone,omitempty"`
-
-	// NamespaceSelector selects namespaces by label
-	// +optional
-	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
-
-	// Namespaces is an explicit list of namespace names to manage
-	// +optional
-	Namespaces []string `json:"namespaces,omitempty"`
-
-	// ExcludeNamespaces is a list of namespaces to exclude from management
-	// +optional
-	ExcludeNamespaces []string `json:"excludeNamespaces,omitempty"`
 
 	// Suspend pauses all scaling operations when true
 	// +kubebuilder:default=false
@@ -166,6 +155,23 @@ type LightsOutScheduleSpec struct {
 	// integration is disabled.
 	// +optional
 	ArgoCD *ArgoCDConfig `json:"argoCD,omitempty"`
+}
+
+// LightsOutScheduleSpec defines the desired state of LightsOutSchedule
+type LightsOutScheduleSpec struct {
+	LightsOutScheduleCore `json:",inline"`
+
+	// NamespaceSelector selects namespaces by label
+	// +optional
+	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
+
+	// Namespaces is an explicit list of namespace names to manage
+	// +optional
+	Namespaces []string `json:"namespaces,omitempty"`
+
+	// ExcludeNamespaces is a list of namespaces to exclude from management
+	// +optional
+	ExcludeNamespaces []string `json:"excludeNamespaces,omitempty"`
 }
 
 // LightsOutScheduleStatus defines the observed state of LightsOutSchedule
