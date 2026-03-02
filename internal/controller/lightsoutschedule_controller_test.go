@@ -162,8 +162,8 @@ func TestCollectWorkloads(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	spec := &lightsoutv1alpha1.LightsOutScheduleSpec{}
-	workloads, err := r.collectWorkloads(context.Background(), []string{"ns1"}, spec)
+	core := &lightsoutv1alpha1.LightsOutScheduleCore{}
+	workloads, err := r.collectWorkloads(context.Background(), []string{"ns1"}, core)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3629,5 +3629,75 @@ done:
 	}
 	if resumedCount != 1 {
 		t.Errorf("expected 1 Resumed event (cronjob), got %d; all events: %v", resumedCount, eventsReceived)
+	}
+}
+
+func TestReconcile_SkipsNamespacesWithLocalSchedules(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	// Two namespaces; team-a has a LightsOutNamespaceSchedule
+	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{"env": "dev"}}}
+	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b", Labels: map[string]string{"env": "dev"}}}
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
+	}
+	localSchedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-schedule", Namespace: "team-a"},
+	}
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "global"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+			},
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(nsA, nsB, deploy, localSchedule, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{Client: c, Scheme: scheme}
+	// 20:00 UTC — within the downscale period (downscale at 18:00, upscale at 06:00 next day)
+	r.TimeFunc = func() time.Time {
+		ts, _ := time.Parse(time.RFC3339, "2026-01-01T20:00:00Z")
+		return ts
+	}
+
+	// First reconcile adds the finalizer and returns early.
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "global"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on first reconcile: %v", err)
+	}
+
+	// Second reconcile does the actual scaling work.
+	_, err = r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "global"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on second reconcile: %v", err)
+	}
+
+	// The deployment in team-a must NOT have been scaled (team-a has a local schedule)
+	var d appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app", Namespace: "team-a"}, &d); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	if d.Spec.Replicas == nil || *d.Spec.Replicas == 0 {
+		t.Error("global schedule should skip team-a because it has a LightsOutNamespaceSchedule")
 	}
 }

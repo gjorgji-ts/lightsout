@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
@@ -79,4 +80,21 @@ func ShouldExcludeWorkload(workloadLabels map[string]string, excludeSelector *me
 	}
 
 	return selector.Matches(labels.Set(workloadLabels)), nil
+}
+
+// FilterNamespacesWithLocalSchedules removes any namespace from the list that
+// contains at least one LightsOutNamespaceSchedule. This implements the
+// "namespace schedule overrides global schedule" precedence rule.
+func FilterNamespacesWithLocalSchedules(ctx context.Context, c client.Client, namespaces []string) ([]string, error) {
+	result := namespaces[:0:0]
+	for _, ns := range namespaces {
+		var localSchedules lightsoutv1alpha1.LightsOutNamespaceScheduleList
+		if err := c.List(ctx, &localSchedules, client.InNamespace(ns), client.Limit(1)); err != nil {
+			return nil, fmt.Errorf("listing LightsOutNamespaceSchedule in %s: %w", ns, err)
+		}
+		if len(localSchedules.Items) == 0 {
+			result = append(result, ns)
+		}
+	}
+	return result, nil
 }

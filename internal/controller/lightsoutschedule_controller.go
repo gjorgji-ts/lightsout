@@ -129,6 +129,15 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
+	// Filter out namespaces that have a LightsOutNamespaceSchedule —
+	// namespace-scoped schedules take precedence over this global schedule.
+	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
+	if err != nil {
+		logger.Error(err, "failed to filter namespaces with local schedules")
+		r.setErrorCondition(ctx, &schedule, err)
+		return ctrl.Result{}, err
+	}
+
 	logger.Info("reconciling",
 		"namespaces", len(namespaces),
 		"nextUpscale", period.NextUpscale,
@@ -348,7 +357,7 @@ func (r *LightsOutScheduleReconciler) scaleWorkloads(
 	logger := log.FromContext(ctx)
 
 	// Collect all workloads
-	workloads, err := r.collectWorkloads(ctx, namespaces, &schedule.Spec)
+	workloads, err := r.collectWorkloads(ctx, namespaces, &schedule.Spec.LightsOutScheduleCore)
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect workloads: %w", err)
 	}
@@ -470,20 +479,20 @@ func (r *LightsOutScheduleReconciler) scaleWorkloads(
 }
 
 // collectWorkloads gathers all workloads from the given namespaces
-func (r *LightsOutScheduleReconciler) collectWorkloads(ctx context.Context, namespaces []string, spec *lightsoutv1alpha1.LightsOutScheduleSpec) ([]Workload, error) {
+func (r *LightsOutScheduleReconciler) collectWorkloads(ctx context.Context, namespaces []string, core *lightsoutv1alpha1.LightsOutScheduleCore) ([]Workload, error) {
 	var workloads []Workload
 	logger := log.FromContext(ctx)
 
 	for _, ns := range namespaces {
 		// Collect Deployments
-		if shouldProcessWorkloadType(spec.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeDeployment) {
+		if shouldProcessWorkloadType(core.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeDeployment) {
 			var deployments appsv1.DeploymentList
 			if err := r.List(ctx, &deployments, client.InNamespace(ns)); err != nil {
 				return nil, err
 			}
 			for i := range deployments.Items {
 				deploy := &deployments.Items[i]
-				excluded, err := ShouldExcludeWorkload(deploy.Labels, spec.ExcludeLabels)
+				excluded, err := ShouldExcludeWorkload(deploy.Labels, core.ExcludeLabels)
 				if err != nil {
 					logger.Error(err, "error checking exclusion", "deployment", deploy.Name)
 					continue
@@ -496,14 +505,14 @@ func (r *LightsOutScheduleReconciler) collectWorkloads(ctx context.Context, name
 		}
 
 		// Collect StatefulSets
-		if shouldProcessWorkloadType(spec.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeStatefulSet) {
+		if shouldProcessWorkloadType(core.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeStatefulSet) {
 			var statefulsets appsv1.StatefulSetList
 			if err := r.List(ctx, &statefulsets, client.InNamespace(ns)); err != nil {
 				return nil, err
 			}
 			for i := range statefulsets.Items {
 				sts := &statefulsets.Items[i]
-				excluded, err := ShouldExcludeWorkload(sts.Labels, spec.ExcludeLabels)
+				excluded, err := ShouldExcludeWorkload(sts.Labels, core.ExcludeLabels)
 				if err != nil {
 					logger.Error(err, "error checking exclusion", "statefulset", sts.Name)
 					continue
@@ -516,14 +525,14 @@ func (r *LightsOutScheduleReconciler) collectWorkloads(ctx context.Context, name
 		}
 
 		// Collect CronJobs
-		if shouldProcessWorkloadType(spec.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeCronJob) {
+		if shouldProcessWorkloadType(core.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeCronJob) {
 			var cronjobs batchv1.CronJobList
 			if err := r.List(ctx, &cronjobs, client.InNamespace(ns)); err != nil {
 				return nil, err
 			}
 			for i := range cronjobs.Items {
 				cj := &cronjobs.Items[i]
-				excluded, err := ShouldExcludeWorkload(cj.Labels, spec.ExcludeLabels)
+				excluded, err := ShouldExcludeWorkload(cj.Labels, core.ExcludeLabels)
 				if err != nil {
 					logger.Error(err, "error checking exclusion", "cronjob", cj.Name)
 					continue
@@ -596,6 +605,14 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 	if err != nil {
 		logger.Error(err, "failed to discover namespaces during cleanup")
 		// Continue with cleanup even if namespace discovery fails
+	}
+
+	// Filter out namespaces that have a LightsOutNamespaceSchedule —
+	// namespace-scoped schedules manage their own cleanup on deletion.
+	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
+	if err != nil {
+		logger.Error(err, "failed to filter namespaces with local schedules")
+		return ctrl.Result{}, err
 	}
 
 	// Restore workloads in each namespace

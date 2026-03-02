@@ -135,3 +135,54 @@ func TestDiscoverNamespaces(t *testing.T) {
 		})
 	}
 }
+
+func TestFilterNamespacesWithLocalSchedules(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	// Create a LightsOutNamespaceSchedule in "team-a"
+	nsSchedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-schedule",
+			Namespace: "team-a",
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(nsSchedule).
+		Build()
+
+	candidates := []string{"team-a", "team-b", "team-c"}
+	result, err := FilterNamespacesWithLocalSchedules(context.Background(), c, candidates)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// team-a should be removed because it has a LightsOutNamespaceSchedule
+	expected := []string{"team-b", "team-c"}
+	if len(result) != len(expected) {
+		t.Errorf("expected %v, got %v", expected, result)
+	}
+	for i, ns := range result {
+		if ns != expected[i] {
+			t.Errorf("expected[%d]=%q, got %q", i, expected[i], ns)
+		}
+	}
+}
+
+func TestFilterNamespacesWithLocalSchedules_NoneExist(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	candidates := []string{"team-a", "team-b"}
+	result, err := FilterNamespacesWithLocalSchedules(context.Background(), c, candidates)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result) != 2 {
+		t.Errorf("expected all 2 namespaces, got %v", result)
+	}
+}
