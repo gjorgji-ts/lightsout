@@ -29,6 +29,7 @@ When business hours resume, LightsOut restores workloads to their original repli
 - **Cron-based scheduling** with IANA timezone support
 - **Manages Deployments, StatefulSets, and CronJobs** — scales replicas to zero or suspends CronJobs
 - **Flexible namespace targeting** — label selectors, explicit lists, and exclusions
+- **Namespace-scoped schedules** — developers can define their own schedules per namespace, independent of global schedules
 - **Rate-limited scaling** — batch workloads to avoid resource spikes
 - **Admission webhooks** — validates schedules and detects overlaps before they're applied
 - **ArgoCD integration** — optional labeling of ArgoCD Application CRDs to prevent false alerts during downscale
@@ -75,13 +76,20 @@ For production setups with webhook validation, see the [Setup Guide](docs/setup-
 
 ## How It Works
 
-LightsOut runs as a controller that watches `LightsOutSchedule` custom resources. On each reconciliation, it calculates whether the current time falls in an "up" or "down" period based on your cron expressions, discovers target namespaces, and scales workloads accordingly. Original replica counts are stored in annotations so they can be restored exactly.
+LightsOut runs as a controller that watches two custom resource types:
+
+- **`LightsOutSchedule`** (cluster-scoped) — for platform teams managing cost policies across multiple namespaces. Supports label selectors and explicit namespace lists.
+- **`LightsOutNamespaceSchedule`** (namespace-scoped) — for developers who want to define their own schedule for their namespace. When a namespace schedule exists, any global schedule targeting that namespace automatically skips it.
+
+On each reconciliation, the controller calculates whether the current time falls in an "up" or "down" period based on your cron expressions, discovers target namespaces and workloads, and scales accordingly. Original replica counts are stored in annotations so they can be restored exactly.
 
 For a deeper look at the architecture, see [docs/architecture.md](docs/architecture.md).
 
 ## Configuration
 
-### Schedule Spec
+### `LightsOutSchedule` (cluster-scoped)
+
+Managed by platform teams. Targets workloads across one or more namespaces.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -99,6 +107,24 @@ For a deeper look at the architecture, see [docs/architecture.md](docs/architect
 | `argoCD` | ArgoCDConfig | No | Enable [ArgoCD integration](docs/argocd.md) |
 
 At least one of `namespaceSelector` or `namespaces` must be specified.
+
+### `LightsOutNamespaceSchedule` (namespace-scoped)
+
+Created by developers in their own namespace. No namespace selection fields — the schedule always manages the namespace it lives in. Supports all the same scheduling fields as `LightsOutSchedule`.
+
+```yaml
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: team-hours
+  namespace: team-a
+spec:
+  upscale: "0 8 * * 1-5"        # 8 AM Monday–Friday
+  downscale: "0 20 * * 1-5"     # 8 PM Monday–Friday
+  timezone: "Europe/Berlin"
+```
+
+When this resource exists in a namespace, any `LightsOutSchedule` targeting that namespace will skip it automatically.
 
 ### Excluding Workloads
 
@@ -152,7 +178,7 @@ LightsOut exposes Prometheus metrics on the metrics endpoint:
 | `lightsout_scaling_duration_seconds` | Histogram | Time taken for scaling operations |
 | `lightsout_last_reconcile_timestamp_seconds` | Gauge | Unix timestamp of last reconciliation |
 
-Scaling events are also recorded as Kubernetes Events on the `LightsOutSchedule` resource.
+Scaling events are also recorded as Kubernetes Events on the `LightsOutSchedule` and `LightsOutNamespaceSchedule` resources.
 
 ## Using with Karpenter
 

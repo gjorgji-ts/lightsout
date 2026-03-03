@@ -28,7 +28,7 @@ A Kubernetes operator is a controller that extends the Kubernetes API with custo
 
 The core loop is:
 
-1. User creates a `LightsOutSchedule` CR
+1. User creates a `LightsOutSchedule` or `LightsOutNamespaceSchedule` CR
 2. The controller detects the change and runs its reconciliation logic
 3. It calculates whether the current time falls in an "up" or "down" period
 4. It discovers which namespaces and workloads are in scope
@@ -40,38 +40,52 @@ The core loop is:
 
 ```mermaid
 flowchart TD
-    CR["LightsOutSchedule CR"] --> R["Reconciler"]
+    CR["LightsOutSchedule CR<br/>(cluster-scoped)"] --> R["LightsOutSchedule Reconciler"]
+    NSCR["LightsOutNamespaceSchedule CR<br/>(namespace-scoped)"] --> NSR["LightsOutNamespaceSchedule Reconciler"]
     R --> PC["Period Calculator"]
     R --> ND["Namespace Discovery"]
+    R --> NF["Namespace Filter<br/>(skip namespaces with local schedules)"]
     PC -->|"current state + next transition"| R
-    ND -->|"target namespaces"| R
+    ND -->|"candidate namespaces"| NF
+    NF -->|"filtered namespaces"| R
+    NSR --> PC
     R --> AL["ArgoCD Labeler<br/>(optional)"]
+    NSR --> AL
     R --> WS["Workload Scaler<br/>(budget-based rate limiting)"]
+    NSR --> WS
     AL -->|"label/unlabel apps"| ArgoCD["ArgoCD Application CRDs"]
     WS -->|"scale operations"| K8s["Kubernetes API<br/>(Deployments, StatefulSets, CronJobs)"]
     WS -->|"store/restore state"| Ann["Annotations<br/>original-replicas<br/>managed-by"]
     R -->|"emit"| Ev["Kubernetes Events"]
+    NSR -->|"emit"| Ev
     R -->|"expose"| Met["Prometheus Metrics"]
+    NSR -->|"expose"| Met
     R -->|"update"| Status["Schedule Status"]
+    NSR -->|"update"| Status
 ```
 
 ## Components
 
-### Reconciler
+### Reconcilers
 
-The central controller loop (`internal/controller/lightsoutschedule_controller.go`). On each reconciliation cycle it:
+LightsOut runs two reconcilers in the same operator process.
+
+**`LightsOutScheduleReconciler`** (`internal/controller/lightsoutschedule_controller.go`) — the cluster-scoped reconciler. On each reconciliation cycle it:
 
 - Reads the `LightsOutSchedule` spec
 - Delegates to the Period Calculator to determine current state
-- Delegates to Namespace Discovery to find target namespaces
-- Collects workloads (Deployments, StatefulSets, CronJobs) across those namespaces
+- Delegates to Namespace Discovery to find candidate namespaces
+- Filters out any namespace that already has a `LightsOutNamespaceSchedule` (namespace-scoped schedules take precedence)
+- Collects workloads (Deployments, StatefulSets, CronJobs) across the remaining namespaces
 - Filters out excluded workloads via `excludeLabels`
 - If ArgoCD integration is enabled, labels/unlabels ArgoCD Application CRDs (ordered relative to scaling)
 - Delegates to the Workload Scaler for actual scaling (with budget-based rate limiting when configured)
 - Updates the schedule's status and conditions
 - Re-queues for the next transition time, or sooner if a batch limit was reached
 
-A finalizer (`lightsout.techsupport.mk/cleanup`) ensures that when a schedule is deleted, all managed workloads are restored to their original state before the resource is removed.
+**`LightsOutNamespaceScheduleReconciler`** (`internal/controller/lightsoutnamespaceschedule_controller.go`) — the namespace-scoped reconciler. It follows the same reconciliation flow but always operates on exactly one namespace: the namespace the `LightsOutNamespaceSchedule` resource lives in. No namespace discovery step is needed.
+
+A finalizer (`lightsout.techsupport.mk/cleanup`) on both resource types ensures that when a schedule is deleted, all managed workloads are restored to their original state before the resource is removed.
 
 ### Period Calculator
 
@@ -84,13 +98,15 @@ It uses adaptive search windows based on cron frequency to efficiently find the 
 
 ### Namespace Discovery
 
-Resolves which namespaces are in scope (`internal/controller/namespace.go`). It supports three targeting mechanisms that can be combined:
+Resolves which namespaces are in scope (`internal/controller/namespace.go`). Used only by the cluster-scoped reconciler; the namespace-scoped reconciler always targets its own namespace implicitly. It supports three targeting mechanisms that can be combined:
 
 - **Label selectors** (`namespaceSelector`) — select namespaces by labels
 - **Explicit lists** (`namespaces`) — name specific namespaces
 - **Exclusions** (`excludeNamespaces`) — remove namespaces from the result
 
 System namespaces (`kube-system`, `kube-public`, `kube-node-lease`) are always excluded automatically.
+
+After discovery, the global reconciler calls `FilterNamespacesWithLocalSchedules` to remove any namespace that contains a `LightsOutNamespaceSchedule`. This implements the precedence rule: a namespace-scoped schedule always wins over a global one.
 
 ### Workload Scaler
 
@@ -133,9 +149,17 @@ See the [ArgoCD Integration Guide](argocd.md) for usage details.
 
 ## Key Design Decisions
 
-### Cluster-Scoped Resource
+### Resource Scopes
 
-`LightsOutSchedule` is currently a cluster-scoped resource. This is intentional for organizations that want centralized cost policies — a platform team defines schedules that span multiple namespaces. Namespace-scoped scheduling is planned for future releases to support team-level self-service.
+**`LightsOutSchedule`** is cluster-scoped. It is intended for platform teams managing cost policies across multiple namespaces. A single resource can target dozens of namespaces via label selectors.
+
+**`LightsOutNamespaceSchedule`** is namespace-scoped. It allows developers to define their own scaling schedules for their namespace without requiring cluster-level access. When a `LightsOutNamespaceSchedule` exists in a namespace, any `LightsOutSchedule` targeting that namespace will skip it — giving the namespace-scoped schedule full control.
+
+Both types share the same scheduling fields (cron expressions, timezone, workload types, rate limits, ArgoCD integration) via a common `LightsOutScheduleCore` struct. They can be independently enabled via `clusterSchedules.enabled` and `namespaceSchedules.enabled` in Helm values.
+
+#### Upgrade note
+
+The `LightsOutSchedule` reconciler checks for namespace schedules on every reconcile cycle, making one API call per target namespace. For most users this is invisible. If a global schedule targets a very large number of namespaces and reconcile latency matters, set `namespaceSchedules.enabled=false` to skip this check entirely — but this is an edge case, not a default concern.
 
 ### Annotation-Based State
 
@@ -164,22 +188,23 @@ ArgoCD integration uses Kubernetes unstructured objects instead of importing Arg
 
 ## Webhooks
 
-LightsOut includes optional admission webhooks for validation and defaulting:
+LightsOut includes optional admission webhooks for validation and defaulting. Both schedule types have their own webhook pair.
 
-**Mutating webhook** — sets `timezone` to `UTC` if not specified.
+**Mutating webhooks** — set `timezone` to `UTC` if not specified.
 
-**Validating webhook** — rejects invalid schedules before they're persisted:
+**Validating webhooks** — reject invalid schedules before they're persisted:
 
-- Validates cron expressions for both `upscale` and `downscale`
-- Validates the timezone is a recognized IANA timezone
-- Ensures at least one namespace selection method is configured
-- Validates rate limit configurations (batch size > 0, non-negative delay)
-- Validates ArgoCD namespace is a valid DNS label when provided
-- Warns (but does not reject) when schedules overlap with existing ones
+- Validate cron expressions for both `upscale` and `downscale`
+- Validate the timezone is a recognized IANA timezone
+- Validate rate limit configurations (batch size > 0, non-negative delay)
+- Validate ArgoCD namespace is a valid DNS label when provided
+- Warn (but do not reject) when a schedule may conflict with an existing one
+
+The `LightsOutSchedule` validator additionally requires at least one namespace selection method (`namespaceSelector` or `namespaces`). The `LightsOutNamespaceSchedule` validator omits this check — the owning namespace is always implicit — and instead warns if a global `LightsOutSchedule` already targets the same namespace (explicit or via label selector).
 
 ## Metrics
 
-LightsOut exposes Prometheus metrics via the controller-runtime metrics server:
+LightsOut exposes Prometheus metrics via the controller-runtime metrics server. Both schedule types use the same metric names. The `schedule` label uses the resource name for cluster-scoped schedules (e.g. `my-global-schedule`) and `namespace/name` for namespace-scoped schedules (e.g. `team-a/my-schedule`) to avoid label collisions.
 
 | Metric                                        | Type      | Labels                                                | Description                   |
 | --------------------------------------------- | --------- | ----------------------------------------------------- | ----------------------------- |

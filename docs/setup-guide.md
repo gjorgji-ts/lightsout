@@ -121,13 +121,42 @@ With webhooks enabled, schedules are validated before being persisted:
 
 - **Invalid cron expressions** are rejected immediately
 - **Invalid timezones** are rejected
-- **Missing namespace selection** (no `namespaceSelector` or `namespaces`) is rejected
+- **Missing namespace selection** on `LightsOutSchedule` (no `namespaceSelector` or `namespaces`) is rejected
 - **Invalid rate limit config** (batch size < 1, negative delays) is rejected
 - **Invalid ArgoCD namespace** (not a valid DNS label) is rejected
 - **Overlapping schedules** produce a warning (not rejected, but you'll know)
+- **Global schedule targeting a namespace** that already has a `LightsOutNamespaceSchedule` produces a warning
 - **Default timezone** is set to `UTC` if not specified
 
 Without webhooks, these errors are only surfaced during reconciliation via status conditions.
+
+## Namespace-Scoped Schedules
+
+Developers can define their own scaling schedules directly in their namespace without requiring cluster-level access. When a `LightsOutNamespaceSchedule` exists in a namespace, any `LightsOutSchedule` targeting that namespace is automatically skipped for that namespace.
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: team-hours
+  namespace: team-a
+spec:
+  upscale: "0 8 * * 1-5"
+  downscale: "0 20 * * 1-5"
+  timezone: "Europe/Berlin"
+EOF
+```
+
+Check status the same way as a global schedule:
+
+```bash
+kubectl get lightsoutnamespaceschedules -n team-a
+```
+
+To allow developers to create these resources in their namespace, provision a `Role` and `RoleBinding` granting `create`, `update`, `delete` on `lightsoutnamespaceschedules` (API group `lightsout.techsupport.mk`). `get`, `list`, `watch` are typically granted to all namespace members for observability.
+
+To disable the namespace schedule controller entirely, set `--set namespaceSchedules.enabled=false` during Helm install/upgrade. The CRD is still installed; only the controller registration and RBAC rules are skipped.
 
 ## Uninstall
 
@@ -139,6 +168,7 @@ Helm does not remove CRDs on uninstall. To fully clean up:
 
 ```bash
 kubectl delete crd lightsoutschedules.lightsout.techsupport.mk
+kubectl delete crd lightsoutnamespaceschedules.lightsout.techsupport.mk
 ```
 
-> **Warning**: Deleting the CRD removes all `LightsOutSchedule` resources. If the controller is still running, its finalizer will restore workloads before deletion. If the controller is already gone, workloads will remain in their current state.
+> **Warning**: Deleting the CRDs removes all corresponding schedule resources. If the controller is still running, its finalizer will restore workloads before deletion. If the controller is already gone, workloads will remain in their current state.
