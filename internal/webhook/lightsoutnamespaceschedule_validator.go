@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
+	"github.com/gjorgji-ts/lightsout/internal/constants"
 )
 
 var lightsoutnamespaceschedulelog = logf.Log.WithName("lightsoutnamespaceschedule-resource")
@@ -45,7 +46,7 @@ var _ admission.Defaulter[*lightsoutv1alpha1.LightsOutNamespaceSchedule] = &Ligh
 func (d *LightsOutNamespaceScheduleDefaulter) Default(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutNamespaceSchedule) error {
 	lightsoutnamespaceschedulelog.Info("defaulting", "name", schedule.Name, "namespace", schedule.Namespace)
 	if schedule.Spec.Timezone == "" {
-		schedule.Spec.Timezone = "UTC"
+		schedule.Spec.Timezone = constants.DefaultTimezone
 	}
 	return nil
 }

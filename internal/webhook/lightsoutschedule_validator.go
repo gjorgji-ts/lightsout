@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
+	"github.com/gjorgji-ts/lightsout/internal/constants"
 )
 
 var lightsoutschedulelog = logf.Log.WithName("lightsoutschedule-resource")
@@ -70,7 +71,7 @@ func (d *LightsOutScheduleDefaulter) Default(ctx context.Context, schedule *ligh
 	lightsoutschedulelog.Info("defaulting", "name", schedule.Name)
 
 	if schedule.Spec.Timezone == "" {
-		schedule.Spec.Timezone = "UTC"
+		schedule.Spec.Timezone = constants.DefaultTimezone
 	}
 
 	return nil

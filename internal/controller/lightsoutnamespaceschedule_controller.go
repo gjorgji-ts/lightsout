@@ -105,7 +105,7 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 	}
 	timezone := schedule.Spec.Timezone
 	if timezone == "" {
-		timezone = "UTC"
+		timezone = constants.DefaultTimezone
 	}
 
 	period, err := CalculatePeriod(schedule.Spec.Upscale, schedule.Spec.Downscale, timezone, now)
@@ -225,13 +225,13 @@ func (r *LightsOutNamespaceScheduleReconciler) recordScalingEvents(schedule *lig
 		return
 	}
 	if !scaleUp && stats.DeploymentsScaled+stats.StatefulSetsScaled+stats.CronJobsSuspended > 0 {
-		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "ScaledDown", "ScaleDown",
+		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, constants.EventReasonScaledDown, constants.EventActionScaleDown,
 			"Scaled down %d deployments, %d statefulsets, suspended %d cronjobs across %d namespaces",
 			stats.DeploymentsScaled, stats.StatefulSetsScaled, stats.CronJobsSuspended, len(namespaces))
 	}
 	totalManaged := stats.DeploymentsManaged + stats.StatefulSetsManaged + stats.CronJobsManaged
 	if scaleUp && totalManaged > 0 {
-		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "ScaledUp", "ScaleUp",
+		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, constants.EventReasonScaledUp, constants.EventActionScaleUp,
 			"Scaled up workloads across %d namespaces (managing %d deployments, %d statefulsets, %d cronjobs)",
 			len(namespaces), stats.DeploymentsManaged, stats.StatefulSetsManaged, stats.CronJobsManaged)
 	}
@@ -255,10 +255,10 @@ func (r *LightsOutNamespaceScheduleReconciler) recordWorkloadEventNS(w Workload,
 		}
 		obj = w.Deployment
 		if scaleUp {
-			reason, action = "ScaledUp", "ScaleUp"
+			reason, action = constants.EventReasonScaledUp, constants.EventActionScaleUp
 			message = fmt.Sprintf("Scaled up by LightsOut namespace schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
 		} else {
-			reason, action = "ScaledDown", "ScaleDown"
+			reason, action = constants.EventReasonScaledDown, constants.EventActionScaleDown
 			message = fmt.Sprintf("Scaled down by LightsOut namespace schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
 		}
 	case WorkloadTypeStatefulSet:
@@ -267,10 +267,10 @@ func (r *LightsOutNamespaceScheduleReconciler) recordWorkloadEventNS(w Workload,
 		}
 		obj = w.StatefulSet
 		if scaleUp {
-			reason, action = "ScaledUp", "ScaleUp"
+			reason, action = constants.EventReasonScaledUp, constants.EventActionScaleUp
 			message = fmt.Sprintf("Scaled up by LightsOut namespace schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
 		} else {
-			reason, action = "ScaledDown", "ScaleDown"
+			reason, action = constants.EventReasonScaledDown, constants.EventActionScaleDown
 			message = fmt.Sprintf("Scaled down by LightsOut namespace schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
 		}
 	case WorkloadTypeCronJob:

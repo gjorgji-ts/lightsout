@@ -50,4 +50,19 @@ const (
 
 	// DefaultArgoCDNamespace is the default namespace where ArgoCD Application CRDs live
 	DefaultArgoCDNamespace = "argocd"
+
+	// DefaultTimezone is the default IANA timezone used when none is specified on a schedule
+	DefaultTimezone = "UTC"
+
+	// EventActionScaleUp is the Kubernetes event action string for a scale-up operation
+	EventActionScaleUp = "ScaleUp"
+
+	// EventActionScaleDown is the Kubernetes event action string for a scale-down operation
+	EventActionScaleDown = "ScaleDown"
+
+	// EventReasonScaledUp is the Kubernetes event reason string when workloads are scaled up
+	EventReasonScaledUp = "ScaledUp"
+
+	// EventReasonScaledDown is the Kubernetes event reason string when workloads are scaled down
+	EventReasonScaledDown = "ScaledDown"
 )

@@ -18,6 +18,8 @@ import (
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 )
 
+const testNS = "team-a"
+
 func TestNamespaceScheduleReconcile_ScalesDown(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -25,7 +27,7 @@ func TestNamespaceScheduleReconcile_ScalesDown(t *testing.T) {
 	_ = batchv1.AddToScheme(scheme)
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
-	ns := "team-a"
+	ns := testNS
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: ns},
 		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
@@ -86,7 +88,7 @@ func TestNamespaceScheduleReconcile_OnlyManagesOwnNamespace(t *testing.T) {
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
 	deployInOwner := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: "app-a", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "app-a", Namespace: testNS},
 		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
 	}
 	deployInOther := &appsv1.Deployment{
@@ -94,7 +96,7 @@ func TestNamespaceScheduleReconcile_OnlyManagesOwnNamespace(t *testing.T) {
 		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
 	}
 	schedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
-		ObjectMeta: metav1.ObjectMeta{Name: "schedule", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: "schedule", Namespace: testNS},
 		Spec: lightsoutv1alpha1.LightsOutNamespaceScheduleSpec{
 			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
 				Upscale:   "0 6 * * *",
@@ -118,7 +120,7 @@ func TestNamespaceScheduleReconcile_OnlyManagesOwnNamespace(t *testing.T) {
 	// Two reconciles: first adds finalizer, second scales
 	for i := 0; i < 2; i++ {
 		_, err := r.Reconcile(context.Background(), reconcile.Request{
-			NamespacedName: types.NamespacedName{Name: "schedule", Namespace: "team-a"},
+			NamespacedName: types.NamespacedName{Name: "schedule", Namespace: testNS},
 		})
 		if err != nil {
 			t.Fatalf("reconcile %d: unexpected error: %v", i+1, err)
@@ -127,7 +129,7 @@ func TestNamespaceScheduleReconcile_OnlyManagesOwnNamespace(t *testing.T) {
 
 	// team-a deployment should be scaled to 0
 	var dA appsv1.Deployment
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "app-a", Namespace: "team-a"}, &dA); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app-a", Namespace: testNS}, &dA); err != nil {
 		t.Fatalf("failed to get team-a deployment: %v", err)
 	}
 	if dA.Spec.Replicas == nil || *dA.Spec.Replicas != 0 {
@@ -151,7 +153,7 @@ func TestNamespaceScheduleReconcile_Suspended(t *testing.T) {
 	_ = batchv1.AddToScheme(scheme)
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
-	ns := "team-a"
+	ns := testNS
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: ns},
 		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
@@ -206,7 +208,7 @@ func TestNamespaceScheduleReconcile_Deletion(t *testing.T) {
 	_ = batchv1.AddToScheme(scheme)
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
-	ns := "team-a"
+	ns := testNS
 	now := metav1.Now()
 	schedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
 		ObjectMeta: metav1.ObjectMeta{
