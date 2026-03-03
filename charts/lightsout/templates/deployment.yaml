@@ -47,6 +47,7 @@ spec:
             - --webhook-cert-name={{ .Values.webhook.certName }}
             - --webhook-cert-key={{ .Values.webhook.keyName }}
             {{- end }}
+            - --enable-namespace-schedules={{ .Values.namespaceSchedules.enabled }}
           ports:
             {{- if .Values.metrics.enabled }}
             - name: metrics
