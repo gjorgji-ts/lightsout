@@ -20,9 +20,20 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 )
+
+// testScheme returns a *runtime.Scheme with the lightsout API types registered,
+// suitable for use with the fake client in webhook tests.
+func testScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	_ = lightsoutv1alpha1.AddToScheme(s)
+	return s
+}
 
 func ptr[T any](v T) *T {
 	return &v
