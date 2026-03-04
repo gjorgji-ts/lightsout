@@ -23,13 +23,10 @@ import (
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -143,7 +140,6 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		"nextUpscale", period.NextUpscale,
 		"nextDownscale", period.NextDownscale)
 
-	// Process workloads
 	scaleUp := period.State == "Up"
 
 	// Get rate limit config for requeue calculation
@@ -158,11 +154,10 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// - Downscale: label ArgoCD apps first, then scale workloads
 	// - Upscale: scale workloads first, then remove ArgoCD labels
 	if !scaleUp && schedule.Spec.ArgoCD != nil {
-		r.labelArgoCDAppsDown(ctx, &schedule, namespaces)
+		labelArgoCDAppsDown(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.ArgoCD, schedule.Name, namespaces)
 	}
 
-	// Scale all workloads (handles collection, budget-based processing, and metrics)
-	scaleResult, err := r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp)
+	scaleResult, err := r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit)
 	if err != nil {
 		logger.Error(err, "failed to scale workloads")
 		r.setErrorCondition(ctx, &schedule, err)
@@ -171,7 +166,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	stillWarmingUp := false
 	if scaleUp && schedule.Spec.ArgoCD != nil {
-		stillWarmingUp = r.handleArgoCDWarmup(ctx, &schedule, namespaces, now)
+		stillWarmingUp = handleArgoCDWarmup(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.ArgoCD, schedule.Name, namespaces, now)
 	}
 
 	stats := scaleResult.stats
@@ -183,6 +178,15 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	schedule.Status.ObservedGeneration = schedule.Generation
 	schedule.Status.NextUpscaleTime = &metav1.Time{Time: period.NextUpscale}
 	schedule.Status.NextDownscaleTime = &metav1.Time{Time: period.NextDownscale}
+	schedule.Status.ScalingProgress = nil
+	if scaleResult.batchLimitReached {
+		schedule.Status.ScalingProgress = &lightsoutv1alpha1.ScalingProgress{
+			Total:      scaleResult.totalWorkloads,
+			Completed:  scaleResult.totalProcessed + scaleResult.totalSkipped,
+			Failed:     scaleResult.totalFailed,
+			InProgress: true,
+		}
+	}
 
 	// Set Ready condition
 	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
@@ -199,7 +203,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// Record events for scaling operations
-	r.recordScalingEvents(&schedule, scaleUp, stats, namespaces)
+	recordScalingEvents(r.Recorder, &schedule, scaleUp, stats, namespaces)
 
 	// Record metrics
 	stateValue := float64(0)
@@ -226,77 +230,150 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
-// recordScalingEvents emits Kubernetes events for completed scaling operations.
-func (r *LightsOutScheduleReconciler) recordScalingEvents(schedule *lightsoutv1alpha1.LightsOutSchedule, scaleUp bool, stats lightsoutv1alpha1.WorkloadStats, namespaces []string) {
-	if r.Recorder == nil {
-		return
+// scaleWorkloads delegates to the shared package-level scaleWorkloads function with
+// global-schedule-specific configuration (no ownership transfer, schedule name as metric label).
+func (r *LightsOutScheduleReconciler) scaleWorkloads(
+	ctx context.Context,
+	schedule *lightsoutv1alpha1.LightsOutSchedule,
+	namespaces []string,
+	scaleUp bool,
+	rateLimit *lightsoutv1alpha1.RateLimitConfig,
+) (*scaleWorkloadsResult, error) {
+	cfg := scaleWorkloadsConfig{
+		ScheduleName:      schedule.Name,
+		ScheduleLabel:     schedule.Name,
+		ScheduleKind:      "schedule",
+		Namespaces:        namespaces,
+		ScaleUp:           scaleUp,
+		RateLimit:         rateLimit,
+		TransferOwnership: false,
 	}
-	if !scaleUp && stats.DeploymentsScaled+stats.StatefulSetsScaled+stats.CronJobsSuspended > 0 {
-		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, constants.EventReasonScaledDown, constants.EventActionScaleDown,
-			"Scaled down %d deployments, %d statefulsets, suspended %d cronjobs across %d namespaces",
-			stats.DeploymentsScaled, stats.StatefulSetsScaled, stats.CronJobsSuspended, len(namespaces))
+	result, err := scaleWorkloads(ctx, r.Client, &schedule.Spec.LightsOutScheduleCore, cfg, r.Recorder)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scale workloads: %w", err)
 	}
-	totalManaged := stats.DeploymentsManaged + stats.StatefulSetsManaged + stats.CronJobsManaged
-	if scaleUp && totalManaged > 0 {
-		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, constants.EventReasonScaledUp, constants.EventActionScaleUp,
-			"Scaled up workloads across %d namespaces (managing %d deployments, %d statefulsets, %d cronjobs)",
-			len(namespaces), stats.DeploymentsManaged, stats.StatefulSetsManaged, stats.CronJobsManaged)
+	return result, nil
+}
+
+func (r *LightsOutScheduleReconciler) setErrorCondition(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, err error) {
+	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             "ReconcileFailed",
+		Message:            err.Error(),
+		ObservedGeneration: schedule.Generation,
+	})
+	if updateErr := r.Status().Update(ctx, schedule); updateErr != nil {
+		log.FromContext(ctx).Error(updateErr, "failed to update error status")
 	}
 }
 
-// recordWorkloadEvent emits a Kubernetes event directly on the given workload object.
-// It is a no-op when Recorder is nil, result is nil, result is skipped, or the
-// workload's typed pointer field is nil.
-func (r *LightsOutScheduleReconciler) recordWorkloadEvent(w Workload, scheduleName string, scaleUp bool, result *ScaleResult) {
-	if r.Recorder == nil || result == nil || result.Skipped {
-		return
+// handleDeletion restores all managed workloads to their original state before allowing deletion
+func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("handling deletion, restoring managed workloads")
+
+	var restoreErrors []string
+
+	// Discover all namespaces this schedule manages
+	namespaces, err := DiscoverNamespaces(ctx, r.Client, &schedule.Spec)
+	if err != nil {
+		logger.Error(err, "failed to discover namespaces during cleanup")
+		// Continue with cleanup even if namespace discovery fails
 	}
 
-	var reason, action, message string
-	var obj runtime.Object
-
-	switch w.Type {
-	case WorkloadTypeDeployment:
-		if w.Deployment == nil {
-			return
-		}
-		obj = w.Deployment
-		if scaleUp {
-			reason, action = constants.EventReasonScaledUp, constants.EventActionScaleUp
-			message = fmt.Sprintf("Scaled up by LightsOut schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
-		} else {
-			reason, action = constants.EventReasonScaledDown, constants.EventActionScaleDown
-			message = fmt.Sprintf("Scaled down by LightsOut schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
-		}
-	case WorkloadTypeStatefulSet:
-		if w.StatefulSet == nil {
-			return
-		}
-		obj = w.StatefulSet
-		if scaleUp {
-			reason, action = constants.EventReasonScaledUp, constants.EventActionScaleUp
-			message = fmt.Sprintf("Scaled up by LightsOut schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
-		} else {
-			reason, action = constants.EventReasonScaledDown, constants.EventActionScaleDown
-			message = fmt.Sprintf("Scaled down by LightsOut schedule %q: replicas %s → %s", scheduleName, result.PreviousValue, result.NewValue)
-		}
-	case WorkloadTypeCronJob:
-		if w.CronJob == nil {
-			return
-		}
-		obj = w.CronJob
-		if scaleUp {
-			reason, action = "Resumed", "Resume"
-			message = fmt.Sprintf("Resumed by LightsOut schedule %q", scheduleName)
-		} else {
-			reason, action = "Suspended", "Suspend"
-			message = fmt.Sprintf("Suspended by LightsOut schedule %q", scheduleName)
-		}
-	default:
-		return
+	// Filter out namespaces that have a LightsOutNamespaceSchedule —
+	// namespace-scoped schedules manage their own cleanup on deletion.
+	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
+	if err != nil {
+		logger.Error(err, "failed to filter namespaces with local schedules")
+		return ctrl.Result{}, err
 	}
 
-	r.Recorder.Eventf(obj, nil, corev1.EventTypeNormal, reason, action, "%s", message)
+	// Restore workloads in each namespace
+	for _, ns := range namespaces {
+		deployments, err := listManagedDeployments(ctx, r.Client, ns, schedule.Name)
+		if err != nil {
+			restoreErrors = append(restoreErrors, fmt.Sprintf("list deployments in %s: %v", ns, err))
+		} else {
+			for i := range deployments {
+				result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true)
+				if err != nil {
+					restoreErrors = append(restoreErrors, fmt.Sprintf("deployment %s/%s: %v", ns, deployments[i].Name, err))
+				} else {
+					recordWorkloadEvent(r.Recorder, WorkloadFromDeployment(&deployments[i]), schedule.Name, "schedule", true, result)
+				}
+			}
+		}
+
+		statefulsets, err := listManagedStatefulSets(ctx, r.Client, ns, schedule.Name)
+		if err != nil {
+			restoreErrors = append(restoreErrors, fmt.Sprintf("list statefulsets in %s: %v", ns, err))
+		} else {
+			for i := range statefulsets {
+				result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true)
+				if err != nil {
+					restoreErrors = append(restoreErrors, fmt.Sprintf("statefulset %s/%s: %v", ns, statefulsets[i].Name, err))
+				} else {
+					recordWorkloadEvent(r.Recorder, WorkloadFromStatefulSet(&statefulsets[i]), schedule.Name, "schedule", true, result)
+				}
+			}
+		}
+
+		cronjobs, err := listManagedCronJobs(ctx, r.Client, ns, schedule.Name)
+		if err != nil {
+			restoreErrors = append(restoreErrors, fmt.Sprintf("list cronjobs in %s: %v", ns, err))
+		} else {
+			for i := range cronjobs {
+				result, err := ScaleCronJob(ctx, r.Client, &cronjobs[i], schedule.Name, true)
+				if err != nil {
+					restoreErrors = append(restoreErrors, fmt.Sprintf("cronjob %s/%s: %v", ns, cronjobs[i].Name, err))
+				} else {
+					recordWorkloadEvent(r.Recorder, WorkloadFromCronJob(&cronjobs[i]), schedule.Name, "schedule", true, result)
+				}
+			}
+		}
+	}
+
+	// Cleanup ArgoCD Application labels
+	if schedule.Spec.ArgoCD != nil {
+		apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
+		if err != nil {
+			logger.Error(err, "failed to discover ArgoCD apps during cleanup")
+		} else {
+			for i := range apps {
+				if _, err := RemoveArgoCDAppLabels(ctx, r.Client, &apps[i], schedule.Name); err != nil {
+					logger.Error(err, "failed to remove labels from ArgoCD app during cleanup", "app", apps[i].GetName())
+				}
+			}
+		}
+	}
+
+	// Record events based on cleanup result
+	if len(restoreErrors) > 0 {
+		logger.Error(nil, "failed to restore some workloads during cleanup",
+			"schedule", schedule.Name,
+			"errors", restoreErrors)
+
+		if r.Recorder != nil {
+			r.Recorder.Eventf(schedule, nil, corev1.EventTypeWarning, "CleanupPartialFailure", "Cleanup",
+				"Failed to restore %d workload(s) during deletion: %s",
+				len(restoreErrors), strings.Join(restoreErrors, "; "))
+		}
+
+		// Don't remove finalizer if there were errors - this will trigger a retry
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	logger.Info("cleanup complete, all managed workloads restored")
+	if r.Recorder != nil {
+		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "CleanupComplete", "Cleanup",
+			"All managed workloads restored to original state")
+	}
+
+	// Remove finalizer to allow deletion
+	controllerutil.RemoveFinalizer(schedule, constants.FinalizerName)
+	return ctrl.Result{}, r.Update(ctx, schedule)
 }
 
 // calculateRequeueAfter returns how long to wait before the next reconciliation.
@@ -330,528 +407,11 @@ func calculateRequeueAfter(period *PeriodResult, scaleUp bool, scaleResult *scal
 	return max(timeUntilNext, time.Minute)
 }
 
-// scaleWorkloadsResult contains the result of scaling all workloads
-type scaleWorkloadsResult struct {
-	stats             lightsoutv1alpha1.WorkloadStats
-	totalProcessed    int
-	totalFailed       int
-	totalSkipped      int
-	totalWorkloads    int // full collection size; set only when batchLimitReached is true
-	batchLimitReached bool
-}
-
-// scaleWorkloads handles the complete scaling workflow using a budget-based
-// single-pass approach. Instead of chunking workloads into batches and blocking
-// between them, it processes workloads one by one with a budget. When the budget
-// is exhausted, it returns early with batchLimitReached=true so the caller can
-// requeue and yield control back to the controller framework.
-//
-// Skipped workloads (already at target state) do not consume budget, making
-// re-entry after requeue cheap — the reconciler naturally picks up where it
-// left off via annotation-based idempotency.
-func (r *LightsOutScheduleReconciler) scaleWorkloads(
-	ctx context.Context,
-	schedule *lightsoutv1alpha1.LightsOutSchedule,
-	namespaces []string,
-	scaleUp bool,
-) (*scaleWorkloadsResult, error) {
-	logger := log.FromContext(ctx)
-
-	// Collect all workloads
-	workloads, err := r.collectWorkloads(ctx, namespaces, &schedule.Spec.LightsOutScheduleCore)
-	if err != nil {
-		return nil, fmt.Errorf("failed to collect workloads: %w", err)
-	}
-
-	// Get rate limit config based on direction
-	var rateLimit *lightsoutv1alpha1.RateLimitConfig
-	if scaleUp {
-		rateLimit = schedule.Spec.UpscaleRateLimit
-	} else {
-		rateLimit = schedule.Spec.DownscaleRateLimit
-	}
-
-	// Determine budget: unlimited (-1) if no rate limit, otherwise batchSize
-	budget := -1
-	if rateLimit != nil && rateLimit.BatchSize != nil && *rateLimit.BatchSize > 0 {
-		budget = *rateLimit.BatchSize
-	}
-
-	direction := "down"
-	if scaleUp {
-		direction = "up"
-	}
-
-	var totalProcessed, totalFailed, totalSkipped int
-	startTime := time.Now()
-
-	for i, w := range workloads {
-		// Check for context cancellation between workloads for faster shutdown response
-		select {
-		case <-ctx.Done():
-			logger.Info("context cancelled during workload processing, will resume on next reconcile",
-				"processed", totalProcessed, "total", len(workloads))
-			return &scaleWorkloadsResult{
-				stats:          r.buildStatsFromWorkloads(workloads, scaleUp),
-				totalProcessed: totalProcessed,
-				totalFailed:    totalFailed,
-				totalSkipped:   totalSkipped,
-			}, ctx.Err()
-		default:
-		}
-
-		var scaleResult *ScaleResult
-		var scaleErr error
-
-		switch w.Type {
-		case WorkloadTypeDeployment:
-			scaleResult, scaleErr = ScaleDeployment(ctx, r.Client, w.Deployment, schedule.Name, scaleUp)
-		case WorkloadTypeStatefulSet:
-			scaleResult, scaleErr = ScaleStatefulSet(ctx, r.Client, w.StatefulSet, schedule.Name, scaleUp)
-		case WorkloadTypeCronJob:
-			scaleResult, scaleErr = ScaleCronJob(ctx, r.Client, w.CronJob, schedule.Name, scaleUp)
-		}
-
-		if scaleErr != nil {
-			logger.Error(scaleErr, "failed to scale workload", "type", w.Type, "name", w.Name, "namespace", w.Namespace)
-			ScalingErrorsTotal.WithLabelValues(schedule.Name, w.Namespace, string(w.Type)).Inc()
-			ScalingWorkloadsProcessed.WithLabelValues(schedule.Name, direction, "failure").Inc()
-			totalFailed++
-			continue
-		}
-
-		if scaleResult.Skipped {
-			totalSkipped++
-			continue
-		}
-
-		// Actual scale operation performed — consume budget
-		operation := "downscale"
-		if scaleUp {
-			operation = "upscale"
-		}
-		ScalingOperationsTotal.WithLabelValues(schedule.Name, w.Namespace, string(w.Type), operation).Inc()
-		ScalingWorkloadsProcessed.WithLabelValues(schedule.Name, direction, "success").Inc()
-		totalProcessed++
-		r.recordWorkloadEvent(w, schedule.Name, scaleUp, scaleResult)
-
-		if budget > 0 {
-			budget--
-			if budget == 0 {
-				// Budget exhausted — check if more workloads remain
-				moreRemain := i < len(workloads)-1
-				if moreRemain {
-					ScalingBatchesTotal.WithLabelValues(schedule.Name, direction).Inc()
-					ScalingDurationSeconds.WithLabelValues(schedule.Name, direction).Observe(time.Since(startTime).Seconds())
-
-					// Set scaling progress
-					schedule.Status.ScalingProgress = &lightsoutv1alpha1.ScalingProgress{
-						Total:      len(workloads),
-						Completed:  totalProcessed + totalSkipped,
-						Failed:     totalFailed,
-						InProgress: true,
-					}
-
-					return &scaleWorkloadsResult{
-						stats:             r.buildStatsFromWorkloads(workloads, scaleUp),
-						totalProcessed:    totalProcessed,
-						totalFailed:       totalFailed,
-						totalSkipped:      totalSkipped,
-						batchLimitReached: true,
-					}, nil
-				}
-			}
-		}
-	}
-
-	// All workloads processed — record metrics and clear progress
-	ScalingDurationSeconds.WithLabelValues(schedule.Name, direction).Observe(time.Since(startTime).Seconds())
-	if totalProcessed > 0 {
-		ScalingBatchesTotal.WithLabelValues(schedule.Name, direction).Inc()
-	}
-	schedule.Status.ScalingProgress = nil
-
-	return &scaleWorkloadsResult{
-		stats:          r.buildStatsFromWorkloads(workloads, scaleUp),
-		totalProcessed: totalProcessed,
-		totalFailed:    totalFailed,
-		totalSkipped:   totalSkipped,
-	}, nil
-}
-
-// collectWorkloads gathers all workloads from the given namespaces
-func (r *LightsOutScheduleReconciler) collectWorkloads(ctx context.Context, namespaces []string, core *lightsoutv1alpha1.LightsOutScheduleCore) ([]Workload, error) {
-	var workloads []Workload
-	logger := log.FromContext(ctx)
-
-	for _, ns := range namespaces {
-		// Collect Deployments
-		if shouldProcessWorkloadType(core.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeDeployment) {
-			var deployments appsv1.DeploymentList
-			if err := r.List(ctx, &deployments, client.InNamespace(ns)); err != nil {
-				return nil, err
-			}
-			for i := range deployments.Items {
-				deploy := &deployments.Items[i]
-				excluded, err := ShouldExcludeWorkload(deploy.Labels, core.ExcludeLabels)
-				if err != nil {
-					logger.Error(err, "error checking exclusion", "deployment", deploy.Name)
-					continue
-				}
-				if excluded {
-					continue
-				}
-				workloads = append(workloads, WorkloadFromDeployment(deploy))
-			}
-		}
-
-		// Collect StatefulSets
-		if shouldProcessWorkloadType(core.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeStatefulSet) {
-			var statefulsets appsv1.StatefulSetList
-			if err := r.List(ctx, &statefulsets, client.InNamespace(ns)); err != nil {
-				return nil, err
-			}
-			for i := range statefulsets.Items {
-				sts := &statefulsets.Items[i]
-				excluded, err := ShouldExcludeWorkload(sts.Labels, core.ExcludeLabels)
-				if err != nil {
-					logger.Error(err, "error checking exclusion", "statefulset", sts.Name)
-					continue
-				}
-				if excluded {
-					continue
-				}
-				workloads = append(workloads, WorkloadFromStatefulSet(sts))
-			}
-		}
-
-		// Collect CronJobs
-		if shouldProcessWorkloadType(core.WorkloadTypes, lightsoutv1alpha1.WorkloadTypeCronJob) {
-			var cronjobs batchv1.CronJobList
-			if err := r.List(ctx, &cronjobs, client.InNamespace(ns)); err != nil {
-				return nil, err
-			}
-			for i := range cronjobs.Items {
-				cj := &cronjobs.Items[i]
-				excluded, err := ShouldExcludeWorkload(cj.Labels, core.ExcludeLabels)
-				if err != nil {
-					logger.Error(err, "error checking exclusion", "cronjob", cj.Name)
-					continue
-				}
-				if excluded {
-					continue
-				}
-				workloads = append(workloads, WorkloadFromCronJob(cj))
-			}
-		}
-	}
-
-	return workloads, nil
-}
-
-func (r *LightsOutScheduleReconciler) setErrorCondition(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, err error) {
-	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionFalse,
-		Reason:             "ReconcileFailed",
-		Message:            err.Error(),
-		ObservedGeneration: schedule.Generation,
-	})
-	if updateErr := r.Status().Update(ctx, schedule); updateErr != nil {
-		log.FromContext(ctx).Error(updateErr, "failed to update error status")
-	}
-}
-
-// buildStatsFromWorkloads creates WorkloadStats from processed workloads
-func (r *LightsOutScheduleReconciler) buildStatsFromWorkloads(workloads []Workload, scaleUp bool) lightsoutv1alpha1.WorkloadStats {
-	stats := lightsoutv1alpha1.WorkloadStats{}
-
-	for _, w := range workloads {
-		switch w.Type {
-		case WorkloadTypeDeployment:
-			stats.DeploymentsManaged++
-		case WorkloadTypeStatefulSet:
-			stats.StatefulSetsManaged++
-		case WorkloadTypeCronJob:
-			stats.CronJobsManaged++
-		}
-	}
-
-	// For downscale, track how many were actually scaled
-	if !scaleUp {
-		stats.DeploymentsScaled = stats.DeploymentsManaged
-		stats.StatefulSetsScaled = stats.StatefulSetsManaged
-		stats.CronJobsSuspended = stats.CronJobsManaged
-	}
-
-	return stats
-}
-
 func shouldProcessWorkloadType(types []lightsoutv1alpha1.WorkloadType, target lightsoutv1alpha1.WorkloadType) bool {
 	if len(types) == 0 {
 		return true // Process all types if none specified
 	}
 	return slices.Contains(types, target)
-}
-
-// handleDeletion restores all managed workloads to their original state before allowing deletion
-func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("handling deletion, restoring managed workloads")
-
-	var restoreErrors []string
-
-	// Discover all namespaces this schedule manages
-	namespaces, err := DiscoverNamespaces(ctx, r.Client, &schedule.Spec)
-	if err != nil {
-		logger.Error(err, "failed to discover namespaces during cleanup")
-		// Continue with cleanup even if namespace discovery fails
-	}
-
-	// Filter out namespaces that have a LightsOutNamespaceSchedule —
-	// namespace-scoped schedules manage their own cleanup on deletion.
-	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
-	if err != nil {
-		logger.Error(err, "failed to filter namespaces with local schedules")
-		return ctrl.Result{}, err
-	}
-
-	// Restore workloads in each namespace
-	for _, ns := range namespaces {
-		// Restore Deployments
-		deployments, err := r.listManagedDeployments(ctx, ns, schedule.Name)
-		if err != nil {
-			restoreErrors = append(restoreErrors, fmt.Sprintf("list deployments in %s: %v", ns, err))
-		} else {
-			for i := range deployments {
-				result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true)
-				if err != nil {
-					restoreErrors = append(restoreErrors, fmt.Sprintf("deployment %s/%s: %v", ns, deployments[i].Name, err))
-				} else {
-					r.recordWorkloadEvent(WorkloadFromDeployment(&deployments[i]), schedule.Name, true, result)
-				}
-			}
-		}
-
-		// Restore StatefulSets
-		statefulsets, err := r.listManagedStatefulSets(ctx, ns, schedule.Name)
-		if err != nil {
-			restoreErrors = append(restoreErrors, fmt.Sprintf("list statefulsets in %s: %v", ns, err))
-		} else {
-			for i := range statefulsets {
-				result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true)
-				if err != nil {
-					restoreErrors = append(restoreErrors, fmt.Sprintf("statefulset %s/%s: %v", ns, statefulsets[i].Name, err))
-				} else {
-					r.recordWorkloadEvent(WorkloadFromStatefulSet(&statefulsets[i]), schedule.Name, true, result)
-				}
-			}
-		}
-
-		// Restore CronJobs
-		cronjobs, err := r.listManagedCronJobs(ctx, ns, schedule.Name)
-		if err != nil {
-			restoreErrors = append(restoreErrors, fmt.Sprintf("list cronjobs in %s: %v", ns, err))
-		} else {
-			for i := range cronjobs {
-				result, err := ScaleCronJob(ctx, r.Client, &cronjobs[i], schedule.Name, true)
-				if err != nil {
-					restoreErrors = append(restoreErrors, fmt.Sprintf("cronjob %s/%s: %v", ns, cronjobs[i].Name, err))
-				} else {
-					r.recordWorkloadEvent(WorkloadFromCronJob(&cronjobs[i]), schedule.Name, true, result)
-				}
-			}
-		}
-	}
-
-	// Cleanup ArgoCD Application labels
-	if schedule.Spec.ArgoCD != nil {
-		apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
-		if err != nil {
-			logger.Error(err, "failed to discover ArgoCD apps during cleanup")
-		} else {
-			for i := range apps {
-				if _, err := RemoveArgoCDAppLabels(ctx, r.Client, &apps[i], schedule.Name); err != nil {
-					logger.Error(err, "failed to remove labels from ArgoCD app during cleanup", "app", apps[i].GetName())
-				}
-			}
-		}
-	}
-
-	// Record events based on cleanup result
-	if len(restoreErrors) > 0 {
-		logger.Error(nil, "failed to restore some workloads during cleanup",
-			"schedule", schedule.Name,
-			"errors", restoreErrors)
-
-		if r.Recorder != nil {
-			r.Recorder.Eventf(schedule, nil, corev1.EventTypeWarning, "CleanupPartialFailure", "Cleanup",
-				"Failed to restore %d workload(s) during deletion: %s",
-				len(restoreErrors), strings.Join(restoreErrors, "; "))
-		}
-
-		// Don't remove finalizer if there were errors - this will trigger a retry
-		// The controller will be requeued and attempt cleanup again
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	logger.Info("cleanup complete, all managed workloads restored")
-	if r.Recorder != nil {
-		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "CleanupComplete", "Cleanup",
-			"All managed workloads restored to original state")
-	}
-
-	// Remove finalizer to allow deletion
-	controllerutil.RemoveFinalizer(schedule, constants.FinalizerName)
-	return ctrl.Result{}, r.Update(ctx, schedule)
-}
-
-// listManagedDeployments returns deployments managed by the given schedule
-func (r *LightsOutScheduleReconciler) listManagedDeployments(ctx context.Context, namespace, scheduleName string) ([]appsv1.Deployment, error) {
-	var deployments appsv1.DeploymentList
-	if err := r.List(ctx, &deployments,
-		client.InNamespace(namespace),
-		client.MatchingLabels{constants.ManagedByLabel: scheduleName},
-	); err != nil {
-		return nil, err
-	}
-	return deployments.Items, nil
-}
-
-// listManagedStatefulSets returns statefulsets managed by the given schedule
-func (r *LightsOutScheduleReconciler) listManagedStatefulSets(ctx context.Context, namespace, scheduleName string) ([]appsv1.StatefulSet, error) {
-	var statefulsets appsv1.StatefulSetList
-	if err := r.List(ctx, &statefulsets,
-		client.InNamespace(namespace),
-		client.MatchingLabels{constants.ManagedByLabel: scheduleName},
-	); err != nil {
-		return nil, err
-	}
-	return statefulsets.Items, nil
-}
-
-// listManagedCronJobs returns cronjobs managed by the given schedule
-func (r *LightsOutScheduleReconciler) listManagedCronJobs(ctx context.Context, namespace, scheduleName string) ([]batchv1.CronJob, error) {
-	var cronjobs batchv1.CronJobList
-	if err := r.List(ctx, &cronjobs,
-		client.InNamespace(namespace),
-		client.MatchingLabels{constants.ManagedByLabel: scheduleName},
-	); err != nil {
-		return nil, err
-	}
-	return cronjobs.Items, nil
-}
-
-// labelArgoCDAppsDown discovers and labels ArgoCD apps as down.
-// Errors are logged but do not block workload scaling.
-func (r *LightsOutScheduleReconciler) labelArgoCDAppsDown(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, namespaces []string) {
-	logger := log.FromContext(ctx)
-
-	apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
-	if err != nil {
-		logger.Error(err, "failed to discover ArgoCD apps, continuing with workload scaling")
-		if r.Recorder != nil {
-			r.Recorder.Eventf(schedule, nil, corev1.EventTypeWarning, "ArgoCDDiscoveryFailed", "ArgoCD",
-				"Failed to discover ArgoCD apps: %v", err)
-		}
-		return
-	}
-
-	for i := range apps {
-		if _, err := LabelArgoCDAppDown(ctx, r.Client, &apps[i], schedule.Name); err != nil {
-			logger.Error(err, "failed to label ArgoCD app", "app", apps[i].GetName())
-		}
-	}
-}
-
-// handleArgoCDWarmup drives the warming-up state machine for all ArgoCD apps matched
-// by the schedule during the Up period. It transitions apps from down→warming-up on
-// the first upscale reconcile, then polls readiness on subsequent reconciles until all
-// managed workloads are ready (or the warmup timeout elapses).
-// Returns true if any app is still in the warming-up state and the reconciler should
-// requeue at WarmupCheckInterval.
-// Errors are logged but do not block reconciliation.
-func (r *LightsOutScheduleReconciler) handleArgoCDWarmup(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, namespaces []string, now time.Time) bool {
-	logger := log.FromContext(ctx)
-
-	apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
-	if err != nil {
-		logger.Error(err, "failed to discover ArgoCD apps for warmup handling")
-		if r.Recorder != nil {
-			r.Recorder.Eventf(schedule, nil, corev1.EventTypeWarning, "ArgoCDDiscoveryFailed", "ArgoCD",
-				"Failed to discover ArgoCD apps: %v", err)
-		}
-		return false
-	}
-
-	warmupTimeout := constants.DefaultWarmupTimeout
-	if schedule.Spec.ArgoCD.WarmupTimeout != nil {
-		warmupTimeout = schedule.Spec.ArgoCD.WarmupTimeout.Duration
-	}
-
-	stillWarmingUp := false
-
-	for i := range apps {
-		app := &apps[i]
-		labels := app.GetLabels()
-		state := labels[constants.StateLabel]
-
-		switch state {
-		case constants.StateDown:
-			// Workloads just scaled up — transition to warming-up
-			if _, err := LabelArgoCDAppWarmingUp(ctx, r.Client, app, schedule.Name, now); err != nil {
-				logger.Error(err, "failed to label ArgoCD app as warming-up", "app", app.GetName())
-			}
-			stillWarmingUp = true
-
-		case constants.StateWarmingUp:
-			// Determine when warming-up started; fall back to now if annotation is missing/invalid
-			warmingUpSince := now
-			annotations := app.GetAnnotations()
-			if ts, ok := annotations[constants.WarmingUpSinceAnnotation]; ok {
-				if parsed, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
-					warmingUpSince = parsed
-				} else {
-					logger.Info("malformed warming-up-since annotation, using current time as fallback",
-						"app", app.GetName(), "value", ts)
-				}
-			}
-
-			timedOut := now.Sub(warmingUpSince) >= warmupTimeout
-
-			destNS, _, _ := unstructured.NestedString(app.Object, "spec", "destination", "namespace")
-
-			ready := timedOut // timeout forces completion regardless of pod state
-			if !ready && destNS != "" {
-				var readErr error
-				ready, readErr = CheckWorkloadReadiness(ctx, r.Client, destNS)
-				if readErr != nil {
-					logger.Error(readErr, "failed to check workload readiness, will retry",
-						"app", app.GetName(), "namespace", destNS)
-					stillWarmingUp = true
-					continue
-				}
-			} else if !ready {
-				// destNS is empty (cluster-scoped app); cannot check pod readiness — will complete on timeout
-				logger.Info("ArgoCD app has no destination namespace, warming-up will complete on timeout",
-					"app", app.GetName(), "timeout", warmupTimeout)
-			}
-
-			if ready {
-				if err := CompleteArgoCDWarmup(ctx, r.Client, app); err != nil {
-					logger.Error(err, "failed to complete ArgoCD warmup", "app", app.GetName())
-					stillWarmingUp = true
-				} else if timedOut {
-					logger.Info("warmup timeout elapsed, labels removed from ArgoCD app",
-						"app", app.GetName(), "timeout", warmupTimeout)
-				}
-			} else {
-				stillWarmingUp = true
-			}
-		}
-	}
-
-	return stillWarmingUp
 }
 
 // SetupWithManager sets up the controller with the Manager.

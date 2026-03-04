@@ -163,7 +163,7 @@ func TestCollectWorkloads(t *testing.T) {
 	}
 
 	core := &lightsoutv1alpha1.LightsOutScheduleCore{}
-	workloads, err := r.collectWorkloads(context.Background(), []string{"ns1"}, core)
+	workloads, err := collectWorkloads(context.Background(), r.Client, []string{"ns1"}, core, "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestScaleWorkloads_BatchLimitReached(t *testing.T) {
 		},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, schedule.Spec.DownscaleRateLimit)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestScaleWorkloads_SkippedDontConsumeBudget(t *testing.T) {
 		},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, schedule.Spec.DownscaleRateLimit)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestScaleWorkloads_NoRateLimitProcessesAll(t *testing.T) {
 		Spec:       lightsoutv1alpha1.LightsOutScheduleSpec{},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1193,17 +1193,15 @@ func TestRecordScalingEvents(t *testing.T) {
 	namespaces := []string{"ns1", "ns2"}
 
 	t.Run("nil recorder is a no-op", func(t *testing.T) {
-		r := &LightsOutScheduleReconciler{}
 		// Should not panic
-		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
+		recordScalingEvents(nil, makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
 			DeploymentsScaled: 2,
 		}, namespaces)
 	})
 
 	t.Run("downscale with workloads emits ScaledDown event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
+		recordScalingEvents(rec, makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
 			DeploymentsScaled:  2,
 			StatefulSetsScaled: 1,
 			CronJobsSuspended:  0,
@@ -1219,8 +1217,7 @@ func TestRecordScalingEvents(t *testing.T) {
 
 	t.Run("downscale with no workloads emits no event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{}, namespaces)
+		recordScalingEvents(rec, makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{}, namespaces)
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events, got %d", len(rec.Events))
 		}
@@ -1228,8 +1225,7 @@ func TestRecordScalingEvents(t *testing.T) {
 
 	t.Run("upscale with managed workloads emits ScaledUp event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordScalingEvents(makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{
+		recordScalingEvents(rec, makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{
 			DeploymentsManaged:  3,
 			StatefulSetsManaged: 1,
 			CronJobsManaged:     2,
@@ -1245,8 +1241,7 @@ func TestRecordScalingEvents(t *testing.T) {
 
 	t.Run("upscale with no managed workloads emits no event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordScalingEvents(makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{}, namespaces)
+		recordScalingEvents(rec, makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{}, namespaces)
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events, got %d", len(rec.Events))
 		}
@@ -1265,15 +1260,13 @@ func TestRecordWorkloadEvent(t *testing.T) {
 	}
 
 	t.Run("nil recorder is a no-op", func(t *testing.T) {
-		r := &LightsOutScheduleReconciler{}
 		// Should not panic
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
+		recordWorkloadEvent(nil, WorkloadFromDeployment(deploy), "sched", "schedule", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
 	})
 
 	t.Run("skipped result emits no event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, &ScaleResult{Skipped: true})
+		recordWorkloadEvent(rec, WorkloadFromDeployment(deploy), "sched", "schedule", false, &ScaleResult{Skipped: true})
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events for skipped result, got %d", len(rec.Events))
 		}
@@ -1281,8 +1274,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("nil result is a no-op", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, nil)
+		recordWorkloadEvent(rec, WorkloadFromDeployment(deploy), "sched", "schedule", false, nil)
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events for nil result, got %d", len(rec.Events))
 		}
@@ -1290,9 +1282,8 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("nil workload pointer is a no-op", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
 		w := Workload{Type: WorkloadTypeDeployment} // Deployment field is nil
-		r.recordWorkloadEvent(w, "sched", false, &ScaleResult{PreviousValue: "1", NewValue: "0"})
+		recordWorkloadEvent(rec, w, "sched", "schedule", false, &ScaleResult{PreviousValue: "1", NewValue: "0"})
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events for nil workload object, got %d", len(rec.Events))
 		}
@@ -1300,8 +1291,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("deployment scale down emits ScaledDown event with replica counts", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "my-schedule", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
+		recordWorkloadEvent(rec, WorkloadFromDeployment(deploy), "my-schedule", "schedule", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1313,8 +1303,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("deployment scale up emits ScaledUp event with replica counts", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "my-schedule", true, &ScaleResult{PreviousValue: "0", NewValue: "3"})
+		recordWorkloadEvent(rec, WorkloadFromDeployment(deploy), "my-schedule", "schedule", true, &ScaleResult{PreviousValue: "0", NewValue: "3"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1326,8 +1315,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("statefulset scale down emits ScaledDown event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromStatefulSet(sts), "my-schedule", false, &ScaleResult{PreviousValue: "2", NewValue: "0"})
+		recordWorkloadEvent(rec, WorkloadFromStatefulSet(sts), "my-schedule", "schedule", false, &ScaleResult{PreviousValue: "2", NewValue: "0"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1339,8 +1327,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("cronjob suspend emits Suspended event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromCronJob(cj), "my-schedule", false, &ScaleResult{PreviousValue: "false", NewValue: "true"})
+		recordWorkloadEvent(rec, WorkloadFromCronJob(cj), "my-schedule", "schedule", false, &ScaleResult{PreviousValue: "false", NewValue: "true"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1352,8 +1339,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("cronjob resume emits Resumed event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromCronJob(cj), "my-schedule", true, &ScaleResult{PreviousValue: "true", NewValue: "false"})
+		recordWorkloadEvent(rec, WorkloadFromCronJob(cj), "my-schedule", "schedule", true, &ScaleResult{PreviousValue: "true", NewValue: "false"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -3491,7 +3477,7 @@ func TestScaleWorkloads_EmitsWorkloadEvents(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "my-schedule"},
 	}
 
-	_, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	_, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
