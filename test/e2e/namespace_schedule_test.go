@@ -236,6 +236,99 @@ spec:
 		})
 	})
 
+	// Global Ownership Transfer tests that when a LightsOutNamespaceSchedule is created in a
+	// namespace where a global LightsOutSchedule has already scaled workloads down, the namespace
+	// schedule claims ownership of those workloads and can restore them independently.
+	// This is the core "namespace overrides global" precedence guarantee for the transition case.
+	Context("Global Ownership Transfer", func() {
+		const (
+			testNamespace = "test-ns-ownership-transfer"
+			globalName    = "test-ownership-global"
+			localName     = "test-ownership-local"
+			scheduleNs    = "lightsout-system"
+		)
+
+		BeforeAll(func() {
+			By("creating test namespace with label for global schedule targeting")
+			createNamespaceWithLabels(testNamespace, map[string]string{"ownership-transfer-test": "true"})
+
+			By("creating test deployment")
+			createDeployment(testNamespace, "ownership-app", 3)
+		})
+
+		AfterAll(func() {
+			cmd := exec.Command("kubectl", "delete", "lightsoutschedule", globalName, "-n", scheduleNs, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "lightsoutnamespaceschedule", localName, "-n", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "ns", testNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should transfer ownership from global to namespace schedule and restore workloads", func() {
+			By("creating a LightsOutSchedule targeting the namespace in downscale period")
+			globalYAML := fmt.Sprintf(`
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  upscale: "0 0 31 12 *"
+  downscale: "0 0 1 1 *"
+  timezone: "UTC"
+  namespaceSelector:
+    matchLabels:
+      ownership-transfer-test: "true"
+`, globalName, scheduleNs)
+
+			err := os.WriteFile("/tmp/test-ownership-global.yaml", []byte(globalYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+			cmd := exec.Command("kubectl", "apply", "-f", "/tmp/test-ownership-global.yaml")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be scaled down by the global schedule")
+			Eventually(func(g Gomega) {
+				replicas := getDeploymentReplicas(testNamespace, "ownership-app")
+				g.Expect(replicas).To(Equal("0"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying deployment is owned by the global schedule")
+			verifyDeploymentAnnotation(testNamespace, "ownership-app", "lightsout.techsupport.mk/managed-by", globalName)
+			verifyDeploymentAnnotation(testNamespace, "ownership-app", "lightsout.techsupport.mk/original-replicas", "3")
+
+			By("creating a LightsOutNamespaceSchedule in upscale period — this overrides the global schedule")
+			localYAML := fmt.Sprintf(`
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  upscale: "0 0 1 1 *"
+  downscale: "0 0 31 12 *"
+  timezone: "UTC"
+`, localName, testNamespace)
+
+			err = os.WriteFile("/tmp/test-ownership-local.yaml", []byte(localYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "apply", "-f", "/tmp/test-ownership-local.yaml")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be restored by the namespace schedule")
+			Eventually(func(g Gomega) {
+				replicas := getDeploymentReplicas(testNamespace, "ownership-app")
+				g.Expect(replicas).To(Equal("3"))
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("verifying the namespace schedule fully released ownership annotations")
+			verifyDeploymentAnnotationMissing(testNamespace, "ownership-app", "lightsout.techsupport.mk/managed-by")
+			verifyDeploymentAnnotationMissing(testNamespace, "ownership-app", "lightsout.techsupport.mk/original-replicas")
+		})
+	})
+
 	Context("Deletion Cleanup", func() {
 		const (
 			testNamespace = "test-ns-schedule-deletion"

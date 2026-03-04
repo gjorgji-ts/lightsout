@@ -201,6 +201,75 @@ func TestNamespaceScheduleReconcile_Suspended(t *testing.T) {
 	}
 }
 
+func TestNamespaceScheduleReconcile_ClaimsGloballyOwnedWorkload(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := testNS
+	// Deployment previously scaled to 0 by a global schedule
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "app",
+			Namespace: ns,
+			Annotations: map[string]string{
+				"lightsout.techsupport.mk/managed-by":        "global-schedule",
+				"lightsout.techsupport.mk/original-replicas": "3",
+			},
+			Labels: map[string]string{
+				"lightsout.techsupport.mk/managed-by": "global-schedule",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+	schedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-schedule", Namespace: ns},
+		Spec: lightsoutv1alpha1.LightsOutNamespaceScheduleSpec{
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 7 * * *",
+				Downscale: "0 19 * * *",
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(deploy, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutNamespaceScheduleReconciler{Client: c, Scheme: scheme}
+	// 10:00 UTC → upscale period (after 07:00 upscale, before 19:00 downscale)
+	r.TimeFunc = func() time.Time {
+		t, _ := time.Parse(time.RFC3339, "2026-01-01T10:00:00Z")
+		return t
+	}
+
+	// Two reconciles: first adds finalizer, second does actual scaling
+	for i := 0; i < 2; i++ {
+		_, err := r.Reconcile(context.Background(), reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "team-schedule", Namespace: ns},
+		})
+		if err != nil {
+			t.Fatalf("reconcile %d: unexpected error: %v", i+1, err)
+		}
+	}
+
+	var d appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app", Namespace: ns}, &d); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	// Namespace schedule must have claimed the workload and restored it
+	if d.Spec.Replicas == nil || *d.Spec.Replicas != 3 {
+		t.Errorf("expected deployment restored to 3 replicas, got %v", d.Spec.Replicas)
+	}
+	if d.Labels["lightsout.techsupport.mk/managed-by"] != "" {
+		t.Errorf("expected managed-by label removed after upscale, got %q", d.Labels["lightsout.techsupport.mk/managed-by"])
+	}
+}
+
 func TestNamespaceScheduleReconcile_Deletion(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)

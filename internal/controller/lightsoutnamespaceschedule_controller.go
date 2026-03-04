@@ -304,7 +304,7 @@ func (r *LightsOutNamespaceScheduleReconciler) scaleWorkloads(
 	namespaces := []string{schedule.Namespace}
 
 	// Collect all workloads in own namespace
-	workloads, err := r.collectWorkloads(ctx, namespaces, &schedule.Spec.LightsOutScheduleCore)
+	workloads, err := r.collectWorkloads(ctx, namespaces, &schedule.Spec.LightsOutScheduleCore, schedule.Name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to collect workloads: %w", err)
 	}
@@ -419,8 +419,11 @@ func (r *LightsOutNamespaceScheduleReconciler) scaleWorkloads(
 	}, nil
 }
 
-// collectWorkloads gathers all workloads from the given namespaces
-func (r *LightsOutNamespaceScheduleReconciler) collectWorkloads(ctx context.Context, namespaces []string, core *lightsoutv1alpha1.LightsOutScheduleCore) ([]Workload, error) {
+// collectWorkloads gathers all workloads from the given namespaces.
+// When a workload is owned by a different schedule, ownership is transferred to scheduleName
+// (preserving the existing original-replicas annotation) so that the namespace schedule
+// can take precedence over any global schedule that previously managed the workload.
+func (r *LightsOutNamespaceScheduleReconciler) collectWorkloads(ctx context.Context, namespaces []string, core *lightsoutv1alpha1.LightsOutScheduleCore, scheduleName string) ([]Workload, error) {
 	var workloads []Workload
 	logger := log.FromContext(ctx)
 
@@ -440,6 +443,18 @@ func (r *LightsOutNamespaceScheduleReconciler) collectWorkloads(ctx context.Cont
 				}
 				if excluded {
 					continue
+				}
+				if existingOwner := deploy.Labels[constants.ManagedByLabel]; existingOwner != "" && existingOwner != scheduleName {
+					logger.Info("transferring deployment ownership to namespace schedule", "deployment", deploy.Name, "from", existingOwner)
+					if deploy.Annotations == nil {
+						deploy.Annotations = make(map[string]string)
+					}
+					deploy.Annotations[constants.ManagedByAnnotation] = scheduleName
+					deploy.Labels[constants.ManagedByLabel] = scheduleName
+					if updateErr := r.Update(ctx, deploy); updateErr != nil {
+						logger.Error(updateErr, "failed to transfer deployment ownership, skipping", "deployment", deploy.Name)
+						continue
+					}
 				}
 				workloads = append(workloads, WorkloadFromDeployment(deploy))
 			}
@@ -461,6 +476,18 @@ func (r *LightsOutNamespaceScheduleReconciler) collectWorkloads(ctx context.Cont
 				if excluded {
 					continue
 				}
+				if existingOwner := sts.Labels[constants.ManagedByLabel]; existingOwner != "" && existingOwner != scheduleName {
+					logger.Info("transferring statefulset ownership to namespace schedule", "statefulset", sts.Name, "from", existingOwner)
+					if sts.Annotations == nil {
+						sts.Annotations = make(map[string]string)
+					}
+					sts.Annotations[constants.ManagedByAnnotation] = scheduleName
+					sts.Labels[constants.ManagedByLabel] = scheduleName
+					if updateErr := r.Update(ctx, sts); updateErr != nil {
+						logger.Error(updateErr, "failed to transfer statefulset ownership, skipping", "statefulset", sts.Name)
+						continue
+					}
+				}
 				workloads = append(workloads, WorkloadFromStatefulSet(sts))
 			}
 		}
@@ -480,6 +507,18 @@ func (r *LightsOutNamespaceScheduleReconciler) collectWorkloads(ctx context.Cont
 				}
 				if excluded {
 					continue
+				}
+				if existingOwner := cj.Labels[constants.ManagedByLabel]; existingOwner != "" && existingOwner != scheduleName {
+					logger.Info("transferring cronjob ownership to namespace schedule", "cronjob", cj.Name, "from", existingOwner)
+					if cj.Annotations == nil {
+						cj.Annotations = make(map[string]string)
+					}
+					cj.Annotations[constants.ManagedByAnnotation] = scheduleName
+					cj.Labels[constants.ManagedByLabel] = scheduleName
+					if updateErr := r.Update(ctx, cj); updateErr != nil {
+						logger.Error(updateErr, "failed to transfer cronjob ownership, skipping", "cronjob", cj.Name)
+						continue
+					}
 				}
 				workloads = append(workloads, WorkloadFromCronJob(cj))
 			}
