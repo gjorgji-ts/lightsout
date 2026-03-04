@@ -237,6 +237,42 @@ func scaleStatefulSetUp(ctx context.Context, c client.Client, sts *appsv1.Statef
 	}, nil
 }
 
+// listManagedDeployments returns all Deployments in namespace carrying the managed-by label for scheduleName.
+func listManagedDeployments(ctx context.Context, c client.Client, namespace, scheduleName string) ([]appsv1.Deployment, error) {
+	var list appsv1.DeploymentList
+	if err := c.List(ctx, &list,
+		client.InNamespace(namespace),
+		client.MatchingLabels{constants.ManagedByLabel: scheduleName},
+	); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// listManagedStatefulSets returns all StatefulSets in namespace carrying the managed-by label for scheduleName.
+func listManagedStatefulSets(ctx context.Context, c client.Client, namespace, scheduleName string) ([]appsv1.StatefulSet, error) {
+	var list appsv1.StatefulSetList
+	if err := c.List(ctx, &list,
+		client.InNamespace(namespace),
+		client.MatchingLabels{constants.ManagedByLabel: scheduleName},
+	); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// listManagedCronJobs returns all CronJobs in namespace carrying the managed-by label for scheduleName.
+func listManagedCronJobs(ctx context.Context, c client.Client, namespace, scheduleName string) ([]batchv1.CronJob, error) {
+	var list batchv1.CronJobList
+	if err := c.List(ctx, &list,
+		client.InNamespace(namespace),
+		client.MatchingLabels{constants.ManagedByLabel: scheduleName},
+	); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
 // ScaleCronJob suspends or resumes a cronjob based on the period
 func ScaleCronJob(ctx context.Context, c client.Client, cj *batchv1.CronJob, scheduleName string, scaleUp bool) (*ScaleResult, error) {
 	logger := log.FromContext(ctx).WithValues("cronjob", cj.Name, "namespace", cj.Namespace)

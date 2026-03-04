@@ -20,9 +20,20 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 )
+
+// testScheme returns a *runtime.Scheme with the lightsout API types registered,
+// suitable for use with the fake client in webhook tests.
+func testScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(s)
+	_ = lightsoutv1alpha1.AddToScheme(s)
+	return s
+}
 
 func ptr[T any](v T) *T {
 	return &v
@@ -96,16 +107,18 @@ func TestValidateRateLimit(t *testing.T) {
 func TestValidateSchedule_WithRateLimits(t *testing.T) {
 	validSchedule := &lightsoutv1alpha1.LightsOutSchedule{
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:    "0 6 * * 1-5",
-			Downscale:  "0 18 * * 1-5",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * 1-5",
+				Downscale: "0 18 * * 1-5",
+				UpscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize:           ptr(10),
+					DelayBetweenBatches: &metav1.Duration{Duration: 5000000000},
+				},
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize: ptr(50),
+				},
+			},
 			Namespaces: []string{"dev"},
-			UpscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize:           ptr(10),
-				DelayBetweenBatches: &metav1.Duration{Duration: 5000000000},
-			},
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize: ptr(50),
-			},
 		},
 	}
 
@@ -116,12 +129,14 @@ func TestValidateSchedule_WithRateLimits(t *testing.T) {
 
 	invalidSchedule := &lightsoutv1alpha1.LightsOutSchedule{
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:    "0 6 * * 1-5",
-			Downscale:  "0 18 * * 1-5",
-			Namespaces: []string{"dev"},
-			UpscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize: ptr(0), // Invalid
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * 1-5",
+				Downscale: "0 18 * * 1-5",
+				UpscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize: ptr(0), // Invalid
+				},
 			},
+			Namespaces: []string{"dev"},
 		},
 	}
 
@@ -135,8 +150,10 @@ func TestValidateScheduleSpec_ArgoCDConfig(t *testing.T) {
 	validBase := lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:    "0 6 * * *",
-			Downscale:  "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+			},
 			Namespaces: []string{"dev"},
 		},
 	}

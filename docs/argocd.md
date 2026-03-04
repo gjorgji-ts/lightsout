@@ -156,7 +156,7 @@ This ordering ensures that:
 
 ### Schedule Deletion
 
-When a `LightsOutSchedule` is deleted, the finalizer cleanup also removes any labels from ArgoCD Applications that were managed by that schedule. This uses the `managed-by` label for efficient lookup.
+When a `LightsOutSchedule` or `LightsOutNamespaceSchedule` is deleted, the finalizer cleanup also removes any labels from ArgoCD Applications that were managed by that schedule. This uses the `managed-by` label for efficient lookup.
 
 ## Graceful Degradation
 

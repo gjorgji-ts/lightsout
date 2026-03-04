@@ -13,6 +13,8 @@ The LightsOut controller requires **cluster-wide permissions** to modify workloa
 | CronJobs | batch | get, list, watch, patch, update | Suspend/unsuspend scheduled jobs |
 | Namespaces | core | get, list, watch | Discover namespaces for namespace selectors |
 | Events | core | create, patch | Record scaling events for observability |
+| LightsOutSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage cluster-scoped schedules |
+| LightsOutNamespaceSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage namespace-scoped schedules; global controller lists these to implement precedence |
 | Applications | argoproj.io | get, list, watch, update, patch | Label ArgoCD Application CRDs during scaling (optional) |
 
 #### Why Cluster-Wide Access?
@@ -22,6 +24,12 @@ LightsOut schedules can target workloads across multiple namespaces using label 
 - A single schedule to manage workloads in `dev-*`, `staging-*`, or other namespace patterns
 - Organization-wide cost savings policies
 - Centralized schedule management
+
+The `LightsOutNamespaceScheduleReconciler` also runs with these cluster-wide permissions (it is part of the same operator process), but it constrains itself at runtime to only act on workloads in the namespace where the `LightsOutNamespaceSchedule` resource lives.
+
+#### Developer access for namespace-scoped schedules
+
+The operator's `ClusterRole` covers what the controller itself needs. For developers to create `LightsOutNamespaceSchedule` resources in their own namespaces, a separate `Role` and `RoleBinding` granting `create`, `update`, `delete` on `lightsoutnamespaceschedules` (in the `lightsout.techsupport.mk` API group) must be provisioned in each namespace. The `get`, `list`, `watch` verbs are typically granted to any namespace member for observability.
 
 ### Security Considerations
 
@@ -34,10 +42,11 @@ LightsOut schedules can target workloads across multiple namespaces using label 
 **Mitigations:**
 - Use namespace selectors and label selectors to precisely target workloads
 - Exclude critical namespaces (e.g., `kube-system`, `monitoring`) from schedules
-- Review `LightsOutSchedule` resources carefully before applying
-- Use Kubernetes RBAC to restrict who can create/modify schedules (see `lightsoutschedule_editor_role.yaml`)
+- Review `LightsOutSchedule` and `LightsOutNamespaceSchedule` resources carefully before applying
+- Use Kubernetes RBAC to restrict who can create/modify cluster-scoped schedules (see `lightsoutschedule_editor_role.yaml`)
+- Use namespace-scoped `Role`/`RoleBinding` to control which developers can create `LightsOutNamespaceSchedule` in each namespace
 - Monitor controller logs and events for unexpected scaling operations
-- Use the admission webhook (when enabled) to validate schedules before creation
+- Use the admission webhooks (when enabled) to validate schedules before creation
 
 **Best Practices:**
 1. Start with a narrow scope (specific namespace, specific labels) before expanding

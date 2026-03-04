@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
   - bases/lightsout.techsupport.mk_lightsoutschedules.yaml
+  - bases/lightsout.techsupport.mk_lightsoutnamespaceschedules.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -69,13 +69,15 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize: &batchSize,
+				},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "test"},
-			},
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize: &batchSize,
 			},
 		},
 	}
@@ -160,8 +162,8 @@ func TestCollectWorkloads(t *testing.T) {
 		Scheme: scheme,
 	}
 
-	spec := &lightsoutv1alpha1.LightsOutScheduleSpec{}
-	workloads, err := r.collectWorkloads(context.Background(), []string{"ns1"}, spec)
+	core := &lightsoutv1alpha1.LightsOutScheduleCore{}
+	workloads, err := collectWorkloads(context.Background(), r.Client, []string{"ns1"}, core, "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -201,13 +203,15 @@ func TestScaleWorkloads_BatchLimitReached(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize: &batchSize,
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize: &batchSize,
+				},
 			},
 		},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, schedule.Spec.DownscaleRateLimit)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -268,13 +272,15 @@ func TestScaleWorkloads_SkippedDontConsumeBudget(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize: &batchSize,
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize: &batchSize,
+				},
 			},
 		},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, schedule.Spec.DownscaleRateLimit)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -323,7 +329,7 @@ func TestScaleWorkloads_NoRateLimitProcessesAll(t *testing.T) {
 		Spec:       lightsoutv1alpha1.LightsOutScheduleSpec{},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -361,14 +367,16 @@ func TestReconcile_RequeueDelayIsMinOfBatchDelayAndTransition(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule-requeue"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize:           &batchSize,
+					DelayBetweenBatches: &delay,
+				},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "requeue"},
-			},
-			DownscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-				BatchSize:           &batchSize,
-				DelayBetweenBatches: &delay,
 			},
 		},
 	}
@@ -439,12 +447,14 @@ func TestReconcile_ArgoCDDownscale(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -556,12 +566,14 @@ func TestReconcile_ArgoCDUpscale(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -657,12 +669,14 @@ func TestReconcile_ArgoCDWarmupComplete(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -767,14 +781,16 @@ func TestReconcile_ArgoCDWarmupTimeout(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{
+					Namespace:     "argocd",
+					WarmupTimeout: &warmupTimeout,
+				},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
-			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{
-				Namespace:     "argocd",
-				WarmupTimeout: &warmupTimeout,
 			},
 		},
 	}
@@ -856,12 +872,14 @@ func TestReconcile_ArgoCDWarmupRequeue(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -931,12 +949,14 @@ func TestReconcile_ArgoCDDownscaleDuringWarmup(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			ArgoCD: &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 		},
 	}
 
@@ -1000,12 +1020,14 @@ func TestReconcile_ArgoCDDisabled(t *testing.T) {
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-schedule"},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+				// ArgoCD: nil — disabled
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "dev"},
 			},
-			// ArgoCD: nil — disabled
 		},
 	}
 
@@ -1171,17 +1193,15 @@ func TestRecordScalingEvents(t *testing.T) {
 	namespaces := []string{"ns1", "ns2"}
 
 	t.Run("nil recorder is a no-op", func(t *testing.T) {
-		r := &LightsOutScheduleReconciler{}
 		// Should not panic
-		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
+		recordScalingEvents(nil, makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
 			DeploymentsScaled: 2,
 		}, namespaces)
 	})
 
 	t.Run("downscale with workloads emits ScaledDown event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
+		recordScalingEvents(rec, makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{
 			DeploymentsScaled:  2,
 			StatefulSetsScaled: 1,
 			CronJobsSuspended:  0,
@@ -1197,8 +1217,7 @@ func TestRecordScalingEvents(t *testing.T) {
 
 	t.Run("downscale with no workloads emits no event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordScalingEvents(makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{}, namespaces)
+		recordScalingEvents(rec, makeSchedule(), false, lightsoutv1alpha1.WorkloadStats{}, namespaces)
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events, got %d", len(rec.Events))
 		}
@@ -1206,8 +1225,7 @@ func TestRecordScalingEvents(t *testing.T) {
 
 	t.Run("upscale with managed workloads emits ScaledUp event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordScalingEvents(makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{
+		recordScalingEvents(rec, makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{
 			DeploymentsManaged:  3,
 			StatefulSetsManaged: 1,
 			CronJobsManaged:     2,
@@ -1223,8 +1241,7 @@ func TestRecordScalingEvents(t *testing.T) {
 
 	t.Run("upscale with no managed workloads emits no event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordScalingEvents(makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{}, namespaces)
+		recordScalingEvents(rec, makeSchedule(), true, lightsoutv1alpha1.WorkloadStats{}, namespaces)
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events, got %d", len(rec.Events))
 		}
@@ -1243,15 +1260,13 @@ func TestRecordWorkloadEvent(t *testing.T) {
 	}
 
 	t.Run("nil recorder is a no-op", func(t *testing.T) {
-		r := &LightsOutScheduleReconciler{}
 		// Should not panic
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
+		recordWorkloadEvent(nil, WorkloadFromDeployment(deploy), "sched", "schedule", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
 	})
 
 	t.Run("skipped result emits no event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, &ScaleResult{Skipped: true})
+		recordWorkloadEvent(rec, WorkloadFromDeployment(deploy), "sched", "schedule", false, &ScaleResult{Skipped: true})
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events for skipped result, got %d", len(rec.Events))
 		}
@@ -1259,8 +1274,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("nil result is a no-op", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "sched", false, nil)
+		recordWorkloadEvent(rec, WorkloadFromDeployment(deploy), "sched", "schedule", false, nil)
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events for nil result, got %d", len(rec.Events))
 		}
@@ -1268,9 +1282,8 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("nil workload pointer is a no-op", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
 		w := Workload{Type: WorkloadTypeDeployment} // Deployment field is nil
-		r.recordWorkloadEvent(w, "sched", false, &ScaleResult{PreviousValue: "1", NewValue: "0"})
+		recordWorkloadEvent(rec, w, "sched", "schedule", false, &ScaleResult{PreviousValue: "1", NewValue: "0"})
 		if len(rec.Events) != 0 {
 			t.Errorf("expected no events for nil workload object, got %d", len(rec.Events))
 		}
@@ -1278,8 +1291,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("deployment scale down emits ScaledDown event with replica counts", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "my-schedule", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
+		recordWorkloadEvent(rec, WorkloadFromDeployment(deploy), "my-schedule", "schedule", false, &ScaleResult{PreviousValue: "3", NewValue: "0"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1291,8 +1303,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("deployment scale up emits ScaledUp event with replica counts", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromDeployment(deploy), "my-schedule", true, &ScaleResult{PreviousValue: "0", NewValue: "3"})
+		recordWorkloadEvent(rec, WorkloadFromDeployment(deploy), "my-schedule", "schedule", true, &ScaleResult{PreviousValue: "0", NewValue: "3"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1304,8 +1315,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("statefulset scale down emits ScaledDown event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromStatefulSet(sts), "my-schedule", false, &ScaleResult{PreviousValue: "2", NewValue: "0"})
+		recordWorkloadEvent(rec, WorkloadFromStatefulSet(sts), "my-schedule", "schedule", false, &ScaleResult{PreviousValue: "2", NewValue: "0"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1317,8 +1327,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("cronjob suspend emits Suspended event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromCronJob(cj), "my-schedule", false, &ScaleResult{PreviousValue: "false", NewValue: "true"})
+		recordWorkloadEvent(rec, WorkloadFromCronJob(cj), "my-schedule", "schedule", false, &ScaleResult{PreviousValue: "false", NewValue: "true"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1330,8 +1339,7 @@ func TestRecordWorkloadEvent(t *testing.T) {
 
 	t.Run("cronjob resume emits Resumed event", func(t *testing.T) {
 		rec := events.NewFakeRecorder(10)
-		r := &LightsOutScheduleReconciler{Recorder: rec}
-		r.recordWorkloadEvent(WorkloadFromCronJob(cj), "my-schedule", true, &ScaleResult{PreviousValue: "true", NewValue: "false"})
+		recordWorkloadEvent(rec, WorkloadFromCronJob(cj), "my-schedule", "schedule", true, &ScaleResult{PreviousValue: "true", NewValue: "false"})
 		if len(rec.Events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(rec.Events))
 		}
@@ -1421,9 +1429,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-down",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *", // 6 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *", // 6 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test"},
 					},
@@ -1537,9 +1547,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-up",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 6 * * *",  // 6 AM daily
-					Downscale: "0 18 * * *", // 6 PM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 6 * * *",  // 6 AM daily
+						Downscale: "0 18 * * *", // 6 PM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-up"},
 					},
@@ -1645,10 +1657,12 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-suspended",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 23 * * *", // 11 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily - would be in "down" period
-					Timezone:  "UTC",
-					Suspend:   true, // Schedule is suspended
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 23 * * *", // 11 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily - would be in "down" period
+						Timezone:  "UTC",
+						Suspend:   true, // Schedule is suspended
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-suspended"},
 					},
@@ -1754,9 +1768,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-sts-down",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *", // 6 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *", // 6 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-sts"},
 					},
@@ -1871,9 +1887,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-sts-up",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 6 * * *",  // 6 AM daily
-					Downscale: "0 18 * * *", // 6 PM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 6 * * *",  // 6 AM daily
+						Downscale: "0 18 * * *", // 6 PM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-sts-up"},
 					},
@@ -1981,9 +1999,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-cj-down",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *", // 6 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *", // 6 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-cj"},
 					},
@@ -2098,9 +2118,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-cj-up",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 6 * * *",  // 6 AM daily
-					Downscale: "0 18 * * *", // 6 PM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 6 * * *",  // 6 AM daily
+						Downscale: "0 18 * * *", // 6 PM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-cj-up"},
 					},
@@ -2275,9 +2297,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-multi",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *", // 6 PM daily
-					Downscale: "0 6 * * *",  // 6 AM daily
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *", // 6 PM daily
+						Downscale: "0 6 * * *",  // 6 AM daily
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-multi"},
 					},
@@ -2378,9 +2402,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-finalizer",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 8 * * *",
-					Downscale: "0 18 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 8 * * *",
+						Downscale: "0 18 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-finalizer"},
 					},
@@ -2467,9 +2493,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-deletion",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-deletion"},
 					},
@@ -2602,9 +2630,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-transition",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 6 * * *",
-					Downscale: "0 18 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 6 * * *",
+						Downscale: "0 18 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-transition"},
 					},
@@ -2751,9 +2781,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-overlap-1",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-overlap"},
 					},
@@ -2802,9 +2834,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-overlap-2",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-overlap"},
 					},
@@ -2892,9 +2926,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-deleted-deploy",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-deleted-deploy"},
 					},
@@ -3010,9 +3046,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-rapid",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-rapid"},
 					},
@@ -3110,9 +3148,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-mid-suspend",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-mid-suspend"},
 					},
@@ -3302,9 +3342,11 @@ var _ = Describe("LightsOutSchedule Controller", func() {
 					Name: "test-schedule-multi-deploy",
 				},
 				Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-					Upscale:   "0 18 * * *",
-					Downscale: "0 6 * * *",
-					Timezone:  "UTC",
+					LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+						Upscale:   "0 18 * * *",
+						Downscale: "0 6 * * *",
+						Timezone:  "UTC",
+					},
 					NamespaceSelector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"environment": "test-multi-deploy"},
 					},
@@ -3435,7 +3477,7 @@ func TestScaleWorkloads_EmitsWorkloadEvents(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "my-schedule"},
 	}
 
-	_, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false)
+	_, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3518,8 +3560,10 @@ func TestHandleDeletion_EmitsWorkloadEvents(t *testing.T) {
 			Finalizers:        []string{constants.FinalizerName},
 		},
 		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
-			Upscale:   "0 6 * * *",
-			Downscale: "0 18 * * *",
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+			},
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{"env": "test"},
 			},
@@ -3571,5 +3615,75 @@ done:
 	}
 	if resumedCount != 1 {
 		t.Errorf("expected 1 Resumed event (cronjob), got %d; all events: %v", resumedCount, eventsReceived)
+	}
+}
+
+func TestReconcile_SkipsNamespacesWithLocalSchedules(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	// Two namespaces; team-a has a LightsOutNamespaceSchedule
+	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{"env": "dev"}}}
+	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b", Labels: map[string]string{"env": "dev"}}}
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
+	}
+	localSchedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "team-schedule", Namespace: "team-a"},
+	}
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: "global"},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 6 * * *",
+				Downscale: "0 18 * * *",
+			},
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(nsA, nsB, deploy, localSchedule, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{Client: c, Scheme: scheme}
+	// 20:00 UTC — within the downscale period (downscale at 18:00, upscale at 06:00 next day)
+	r.TimeFunc = func() time.Time {
+		ts, _ := time.Parse(time.RFC3339, "2026-01-01T20:00:00Z")
+		return ts
+	}
+
+	// First reconcile adds the finalizer and returns early.
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "global"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on first reconcile: %v", err)
+	}
+
+	// Second reconcile does the actual scaling work.
+	_, err = r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "global"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error on second reconcile: %v", err)
+	}
+
+	// The deployment in team-a must NOT have been scaled (team-a has a local schedule)
+	var d appsv1.Deployment
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "app", Namespace: "team-a"}, &d); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	if d.Spec.Replicas == nil || *d.Spec.Replicas == 0 {
+		t.Error("global schedule should skip team-a because it has a LightsOutNamespaceSchedule")
 	}
 }

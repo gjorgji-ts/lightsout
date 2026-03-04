@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
+	"github.com/gjorgji-ts/lightsout/internal/constants"
 )
 
 var lightsoutschedulelog = logf.Log.WithName("lightsoutschedule-resource")
@@ -44,13 +45,17 @@ type LightsOutScheduleValidator struct {
 
 // SetupWebhookWithManager sets up the webhook with the manager
 func SetupWebhookWithManager(mgr ctrl.Manager) error {
-	validator := &LightsOutScheduleValidator{
-		Client: mgr.GetClient(),
+	// LightsOutSchedule webhook
+	if err := ctrl.NewWebhookManagedBy(mgr, &lightsoutv1alpha1.LightsOutSchedule{}).
+		WithValidator(&LightsOutScheduleValidator{Client: mgr.GetClient()}).
+		WithDefaulter(&LightsOutScheduleDefaulter{}).
+		Complete(); err != nil {
+		return err
 	}
-	defaulter := &LightsOutScheduleDefaulter{}
-	return ctrl.NewWebhookManagedBy(mgr, &lightsoutv1alpha1.LightsOutSchedule{}).
-		WithValidator(validator).
-		WithDefaulter(defaulter).
+	// LightsOutNamespaceSchedule webhook
+	return ctrl.NewWebhookManagedBy(mgr, &lightsoutv1alpha1.LightsOutNamespaceSchedule{}).
+		WithValidator(&LightsOutNamespaceScheduleValidator{Client: mgr.GetClient()}).
+		WithDefaulter(&LightsOutNamespaceScheduleDefaulter{}).
 		Complete()
 }
 
@@ -66,7 +71,7 @@ func (d *LightsOutScheduleDefaulter) Default(ctx context.Context, schedule *ligh
 	lightsoutschedulelog.Info("defaulting", "name", schedule.Name)
 
 	if schedule.Spec.Timezone == "" {
-		schedule.Spec.Timezone = "UTC"
+		schedule.Spec.Timezone = constants.DefaultTimezone
 	}
 
 	return nil
@@ -117,8 +122,7 @@ func (v *LightsOutScheduleValidator) checkOverlappingSchedules(ctx context.Conte
 	var scheduleList lightsoutv1alpha1.LightsOutScheduleList
 	if err := v.Client.List(ctx, &scheduleList); err != nil {
 		lightsoutschedulelog.Error(err, "failed to list schedules for overlap check")
-		// Don't fail validation if we can't check - just log and continue
-		return nil
+		return admission.Warnings{"overlap check could not be completed: failed to list existing schedules; verify manually that no other LightsOutSchedule targets the same namespaces"}
 	}
 
 	for _, existing := range scheduleList.Items {
@@ -198,7 +202,7 @@ func LabelSelectorsEqual(a, b *metav1.LabelSelector) bool {
 			return false
 		}
 	}
-	// Compare MatchExpressions (simplified - just check length and order)
+	// Compare MatchExpressions (order-independent Values comparison)
 	if len(a.MatchExpressions) != len(b.MatchExpressions) {
 		return false
 	}
@@ -210,8 +214,13 @@ func LabelSelectorsEqual(a, b *metav1.LabelSelector) bool {
 		if len(a.MatchExpressions[i].Values) != len(b.MatchExpressions[i].Values) {
 			return false
 		}
-		for j := range a.MatchExpressions[i].Values {
-			if a.MatchExpressions[i].Values[j] != b.MatchExpressions[i].Values[j] {
+		// Order-independent Values comparison
+		aVals := make(map[string]struct{}, len(a.MatchExpressions[i].Values))
+		for _, v := range a.MatchExpressions[i].Values {
+			aVals[v] = struct{}{}
+		}
+		for _, v := range b.MatchExpressions[i].Values {
+			if _, ok := aVals[v]; !ok {
 				return false
 			}
 		}
@@ -227,70 +236,99 @@ func IsEmptyLabelSelector(selector *metav1.LabelSelector) bool {
 	return len(selector.MatchLabels) == 0 && len(selector.MatchExpressions) == 0
 }
 
-// ValidateScheduleSpec validates the LightsOutSchedule spec
-func ValidateScheduleSpec(schedule *lightsoutv1alpha1.LightsOutSchedule) error {
+// ValidateScheduleCore validates the fields shared between LightsOutSchedule and
+// LightsOutNamespaceSchedule (cron expressions, timezone, rate limits, ArgoCD config).
+// It does NOT check namespace-selection fields, which are global-schedule-only concerns.
+func ValidateScheduleCore(core *lightsoutv1alpha1.LightsOutScheduleCore) error {
 	var allErrs field.ErrorList
 
 	// Validate upscale cron expression
-	if err := validateCronExpression(schedule.Spec.Upscale); err != nil {
+	if err := validateCronExpression(core.Upscale); err != nil {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "upscale"),
-			schedule.Spec.Upscale,
+			core.Upscale,
 			fmt.Sprintf("invalid cron expression: %v", err),
 		))
 	}
 
 	// Validate downscale cron expression
-	if err := validateCronExpression(schedule.Spec.Downscale); err != nil {
+	if err := validateCronExpression(core.Downscale); err != nil {
 		allErrs = append(allErrs, field.Invalid(
 			field.NewPath("spec", "downscale"),
-			schedule.Spec.Downscale,
+			core.Downscale,
 			fmt.Sprintf("invalid cron expression: %v", err),
 		))
 	}
 
 	// Validate timezone
-	if schedule.Spec.Timezone != "" {
-		if _, err := time.LoadLocation(schedule.Spec.Timezone); err != nil {
+	if core.Timezone != "" {
+		if _, err := time.LoadLocation(core.Timezone); err != nil {
 			allErrs = append(allErrs, field.Invalid(
 				field.NewPath("spec", "timezone"),
-				schedule.Spec.Timezone,
+				core.Timezone,
 				"invalid IANA timezone",
 			))
 		}
 	}
 
-	// Validate namespace selection - at least one must be specified
+	// Validate rate limit configs
+	allErrs = append(allErrs, ValidateRateLimit(core.UpscaleRateLimit, "upscaleRateLimit")...)
+	allErrs = append(allErrs, ValidateRateLimit(core.DownscaleRateLimit, "downscaleRateLimit")...)
+
+	// Validate ArgoCD config
+	if core.ArgoCD != nil {
+		if core.ArgoCD.Namespace != "" {
+			errs := validation.IsDNS1123Label(core.ArgoCD.Namespace)
+			if len(errs) > 0 {
+				allErrs = append(allErrs, field.Invalid(
+					field.NewPath("spec", "argoCD", "namespace"),
+					core.ArgoCD.Namespace,
+					fmt.Sprintf("invalid namespace name: %s", strings.Join(errs, ", ")),
+				))
+			}
+		}
+		if core.ArgoCD.WarmupTimeout != nil && core.ArgoCD.WarmupTimeout.Duration <= 0 {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", "argoCD", "warmupTimeout"),
+				core.ArgoCD.WarmupTimeout.Duration,
+				"must be positive",
+			))
+		}
+	}
+
+	if len(allErrs) == 0 {
+		return nil
+	}
+	return allErrs.ToAggregate()
+}
+
+// ValidateScheduleSpec validates the LightsOutSchedule spec (global, cluster-scoped).
+// It calls ValidateScheduleCore for shared fields and additionally enforces that at
+// least one namespace-selection field (namespaceSelector or namespaces) is set.
+func ValidateScheduleSpec(schedule *lightsoutv1alpha1.LightsOutSchedule) error {
+	var allErrs field.ErrorList
+
+	if err := ValidateScheduleCore(&schedule.Spec.LightsOutScheduleCore); err != nil {
+		// err is an Aggregate — append each individual error so we can combine
+		// with any additional errors below.
+		if agg, ok := err.(interface{ Errors() []error }); ok {
+			for _, e := range agg.Errors() {
+				if fe, ok := e.(*field.Error); ok {
+					allErrs = append(allErrs, fe)
+				}
+			}
+		} else {
+			// Fallback: wrap as a generic error on spec
+			allErrs = append(allErrs, field.InternalError(field.NewPath("spec"), err))
+		}
+	}
+
+	// Validate namespace selection - at least one must be specified (global-only requirement)
 	if schedule.Spec.NamespaceSelector == nil && len(schedule.Spec.Namespaces) == 0 {
 		allErrs = append(allErrs, field.Required(
 			field.NewPath("spec"),
 			"at least one of namespaceSelector or namespaces must be specified",
 		))
-	}
-
-	// Validate rate limit configs
-	allErrs = append(allErrs, ValidateRateLimit(schedule.Spec.UpscaleRateLimit, "upscaleRateLimit")...)
-	allErrs = append(allErrs, ValidateRateLimit(schedule.Spec.DownscaleRateLimit, "downscaleRateLimit")...)
-
-	// Validate ArgoCD config
-	if schedule.Spec.ArgoCD != nil {
-		if schedule.Spec.ArgoCD.Namespace != "" {
-			errs := validation.IsDNS1123Label(schedule.Spec.ArgoCD.Namespace)
-			if len(errs) > 0 {
-				allErrs = append(allErrs, field.Invalid(
-					field.NewPath("spec", "argoCD", "namespace"),
-					schedule.Spec.ArgoCD.Namespace,
-					fmt.Sprintf("invalid namespace name: %s", strings.Join(errs, ", ")),
-				))
-			}
-		}
-		if schedule.Spec.ArgoCD.WarmupTimeout != nil && schedule.Spec.ArgoCD.WarmupTimeout.Duration <= 0 {
-			allErrs = append(allErrs, field.Invalid(
-				field.NewPath("spec", "argoCD", "warmupTimeout"),
-				schedule.Spec.ArgoCD.WarmupTimeout.Duration,
-				"must be positive",
-			))
-		}
 	}
 
 	if len(allErrs) == 0 {

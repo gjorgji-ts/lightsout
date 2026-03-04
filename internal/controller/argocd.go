@@ -5,9 +5,12 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -231,6 +234,132 @@ func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace stri
 	}
 
 	return true, nil
+}
+
+// labelArgoCDAppsDown discovers and labels ArgoCD apps in namespaces as down.
+// Errors are logged but do not block workload scaling.
+func labelArgoCDAppsDown(
+	ctx context.Context,
+	c client.Client,
+	recorder events.EventRecorder,
+	scheduleObj runtime.Object,
+	argoCDSpec *lightsoutv1alpha1.ArgoCDConfig,
+	scheduleName string,
+	namespaces []string,
+) {
+	logger := log.FromContext(ctx)
+
+	apps, err := DiscoverArgoCDApps(ctx, c, argoCDSpec, namespaces)
+	if err != nil {
+		logger.Error(err, "failed to discover ArgoCD apps, continuing with workload scaling")
+		if recorder != nil {
+			recorder.Eventf(scheduleObj, nil, corev1.EventTypeWarning, "ArgoCDDiscoveryFailed", "ArgoCD",
+				"Failed to discover ArgoCD apps: %v", err)
+		}
+		return
+	}
+
+	for i := range apps {
+		if _, err := LabelArgoCDAppDown(ctx, c, &apps[i], scheduleName); err != nil {
+			logger.Error(err, "failed to label ArgoCD app", "app", apps[i].GetName())
+		}
+	}
+}
+
+// handleArgoCDWarmup drives the warming-up state machine for all ArgoCD apps matched
+// by the schedule during the Up period.
+// Returns true if any app is still in the warming-up state and the reconciler should
+// requeue at WarmupCheckInterval.
+// Errors are logged but do not block reconciliation.
+func handleArgoCDWarmup(
+	ctx context.Context,
+	c client.Client,
+	recorder events.EventRecorder,
+	scheduleObj runtime.Object,
+	argoCDSpec *lightsoutv1alpha1.ArgoCDConfig,
+	scheduleName string,
+	namespaces []string,
+	now time.Time,
+) bool {
+	logger := log.FromContext(ctx)
+
+	apps, err := DiscoverArgoCDApps(ctx, c, argoCDSpec, namespaces)
+	if err != nil {
+		logger.Error(err, "failed to discover ArgoCD apps for warmup handling")
+		if recorder != nil {
+			recorder.Eventf(scheduleObj, nil, corev1.EventTypeWarning, "ArgoCDDiscoveryFailed", "ArgoCD",
+				"Failed to discover ArgoCD apps: %v", err)
+		}
+		return false
+	}
+
+	warmupTimeout := constants.DefaultWarmupTimeout
+	if argoCDSpec.WarmupTimeout != nil {
+		warmupTimeout = argoCDSpec.WarmupTimeout.Duration
+	}
+
+	stillWarmingUp := false
+
+	for i := range apps {
+		app := &apps[i]
+		labels := app.GetLabels()
+		state := labels[constants.StateLabel]
+
+		switch state {
+		case constants.StateDown:
+			// Workloads just scaled up — transition to warming-up
+			if _, err := LabelArgoCDAppWarmingUp(ctx, c, app, scheduleName, now); err != nil {
+				logger.Error(err, "failed to label ArgoCD app as warming-up", "app", app.GetName())
+			}
+			stillWarmingUp = true
+
+		case constants.StateWarmingUp:
+			// Determine when warming-up started; fall back to now if annotation is missing/invalid
+			warmingUpSince := now
+			annotations := app.GetAnnotations()
+			if ts, ok := annotations[constants.WarmingUpSinceAnnotation]; ok {
+				if parsed, parseErr := time.Parse(time.RFC3339, ts); parseErr == nil {
+					warmingUpSince = parsed
+				} else {
+					logger.Info("malformed warming-up-since annotation, using current time as fallback",
+						"app", app.GetName(), "value", ts)
+				}
+			}
+
+			timedOut := now.Sub(warmingUpSince) >= warmupTimeout
+
+			destNS, _, _ := unstructured.NestedString(app.Object, "spec", "destination", "namespace")
+
+			ready := timedOut
+			if !ready && destNS != "" {
+				var readErr error
+				ready, readErr = CheckWorkloadReadiness(ctx, c, destNS)
+				if readErr != nil {
+					logger.Error(readErr, "failed to check workload readiness, will retry",
+						"app", app.GetName(), "namespace", destNS)
+					stillWarmingUp = true
+					continue
+				}
+			} else if !ready {
+				logger.Info("ArgoCD app has no destination namespace, warming-up will complete on timeout",
+					"app", app.GetName(), "timeout", warmupTimeout)
+			}
+
+			if ready {
+				if err := CompleteArgoCDWarmup(ctx, c, app); err != nil {
+					logger.Error(err, "failed to complete ArgoCD warmup", "app", app.GetName())
+					stillWarmingUp = true
+				} else if timedOut {
+					logger.Info("warmup timeout elapsed, labels removed from ArgoCD app",
+						"app", app.GetName(), "timeout", warmupTimeout)
+				}
+			} else {
+				stillWarmingUp = true
+			}
+		}
+	}
+
+	return stillWarmingUp
 }
 
 // CompleteArgoCDWarmup removes the lightsout state labels and the warming-up-since

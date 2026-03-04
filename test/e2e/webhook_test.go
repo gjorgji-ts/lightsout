@@ -30,6 +30,139 @@ import (
 	"github.com/gjorgji-ts/lightsout/test/utils"
 )
 
+var _ = Describe("Webhook Validation - LightsOutNamespaceSchedule", Ordered, func() {
+	const (
+		webhookTestNs    = "test-ns-webhook"
+		scheduleNamespace = "lightsout-system"
+	)
+
+	applyNsSchedule := func(tmpName, yaml string) (string, error) {
+		path := fmt.Sprintf("/tmp/wh-ns-test-%s.yaml", tmpName)
+		Expect(os.WriteFile(path, []byte(yaml), 0644)).To(Succeed())
+		cmd := exec.Command("kubectl", "apply", "-f", path)
+		return utils.Run(cmd)
+	}
+
+	deleteNsSchedule := func(namespace, name string) {
+		cmd := exec.Command("kubectl", "delete", "lightsoutnamespaceschedule", name,
+			"-n", namespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+	}
+
+	BeforeAll(func() {
+		By("creating test namespace for namespace schedule webhook tests")
+		cmd := exec.Command("kubectl", "create", "ns", webhookTestNs)
+		_, _ = utils.Run(cmd)
+	})
+
+	AfterAll(func() {
+		cmd := exec.Command("kubectl", "delete", "ns", webhookTestNs, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+	})
+
+	Context("Rejected Namespace Schedules", func() {
+		It("should reject an invalid upscale cron expression", func() {
+			output, err := applyNsSchedule("ns-bad-upscale", fmt.Sprintf(`
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: wh-ns-bad-upscale
+  namespace: %s
+spec:
+  upscale: "not-a-cron"
+  downscale: "0 18 * * 1-5"
+  timezone: "UTC"
+`, webhookTestNs))
+			Expect(err).To(HaveOccurred(), "expected webhook to reject invalid upscale cron")
+			Expect(output).To(ContainSubstring("invalid cron expression"))
+		})
+
+		It("should reject an invalid timezone", func() {
+			output, err := applyNsSchedule("ns-bad-tz", fmt.Sprintf(`
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: wh-ns-bad-tz
+  namespace: %s
+spec:
+  upscale: "0 6 * * 1-5"
+  downscale: "0 18 * * 1-5"
+  timezone: "Mars/Olympus"
+`, webhookTestNs))
+			Expect(err).To(HaveOccurred(), "expected webhook to reject invalid IANA timezone")
+			Expect(output).To(ContainSubstring("invalid IANA timezone"))
+		})
+	})
+
+	Context("Accepted Namespace Schedules", Ordered, func() {
+		AfterAll(func() {
+			deleteNsSchedule(webhookTestNs, "wh-ns-valid")
+		})
+
+		It("should accept a valid schedule without requiring namespace selectors", func() {
+			_, err := applyNsSchedule("ns-valid", fmt.Sprintf(`
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: wh-ns-valid
+  namespace: %s
+spec:
+  upscale: "0 6 * * 1-5"
+  downscale: "0 18 * * 1-5"
+  timezone: "Europe/Berlin"
+`, webhookTestNs))
+			Expect(err).NotTo(HaveOccurred(), "expected a valid namespace schedule to be accepted")
+		})
+	})
+
+	Context("Global Schedule Overlap Warning", Ordered, func() {
+		AfterAll(func() {
+			cmd := exec.Command("kubectl", "delete", "lightsoutschedule", "wh-global-overlap",
+				"-n", scheduleNamespace, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+			deleteNsSchedule(webhookTestNs, "wh-ns-overlap")
+		})
+
+		It("should warn but accept when a global schedule already targets the namespace by name", func() {
+			By("creating a global LightsOutSchedule targeting the test namespace by explicit name")
+			globalYAML := fmt.Sprintf(`
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: wh-global-overlap
+  namespace: %s
+spec:
+  upscale: "0 6 * * 1-5"
+  downscale: "0 18 * * 1-5"
+  timezone: "UTC"
+  namespaces:
+    - %s
+`, scheduleNamespace, webhookTestNs)
+
+			err := os.WriteFile("/tmp/wh-global-overlap.yaml", []byte(globalYAML), 0644)
+			Expect(err).NotTo(HaveOccurred())
+			cmd := exec.Command("kubectl", "apply", "-f", "/tmp/wh-global-overlap.yaml")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a LightsOutNamespaceSchedule in the same namespace")
+			output, err := applyNsSchedule("ns-overlap", fmt.Sprintf(`
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: wh-ns-overlap
+  namespace: %s
+spec:
+  upscale: "0 8 * * 1-5"
+  downscale: "0 20 * * 1-5"
+  timezone: "UTC"
+`, webhookTestNs))
+			Expect(err).NotTo(HaveOccurred(), "overlapping namespace schedule should be accepted (warning, not error)")
+			Expect(output).To(ContainSubstring("LightsOutSchedule"), "expected a global overlap warning in the output")
+		})
+	})
+})
+
 var _ = Describe("Webhook Validation", func() {
 	const scheduleNamespace = "lightsout-system"
 

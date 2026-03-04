@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -40,8 +39,8 @@ import (
 	"github.com/gjorgji-ts/lightsout/internal/constants"
 )
 
-// LightsOutScheduleReconciler reconciles a LightsOutSchedule object
-type LightsOutScheduleReconciler struct {
+// LightsOutNamespaceScheduleReconciler reconciles a LightsOutNamespaceSchedule object
+type LightsOutNamespaceScheduleReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -50,31 +49,30 @@ type LightsOutScheduleReconciler struct {
 	TimeFunc func() time.Time
 }
 
-// +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutschedules,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutschedules/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutschedules/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutnamespaceschedules,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutnamespaceschedules/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutnamespaceschedules/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch;update;patch
 
-func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	// Fetch the schedule
-	var schedule lightsoutv1alpha1.LightsOutSchedule
+	var schedule lightsoutv1alpha1.LightsOutNamespaceSchedule
 	if err := r.Get(ctx, req.NamespacedName, &schedule); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("schedule not found, likely deleted")
+			logger.Info("namespace schedule not found, likely deleted")
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
 
 	// Enrich logger with schedule context for all subsequent log calls
-	logger = logger.WithValues("schedule", schedule.Name, "generation", schedule.Generation)
+	logger = logger.WithValues("schedule", schedule.Name, "namespace", schedule.Namespace, "generation", schedule.Generation)
 	ctx = log.IntoContext(ctx, logger)
 
 	// Add finalizer if not present
@@ -93,7 +91,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Skip if suspended
 	if schedule.Spec.Suspend {
-		logger.Info("schedule is suspended, skipping reconciliation")
+		logger.Info("namespace schedule is suspended, skipping reconciliation")
 		return ctrl.Result{}, nil
 	}
 
@@ -118,28 +116,15 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	logger = logger.WithValues("state", period.State)
 	ctx = log.IntoContext(ctx, logger)
 
-	// Discover target namespaces
-	namespaces, err := DiscoverNamespaces(ctx, r.Client, &schedule.Spec)
-	if err != nil {
-		logger.Error(err, "failed to discover namespaces")
-		r.setErrorCondition(ctx, &schedule, err)
-		return ctrl.Result{}, err
-	}
-
-	// Filter out namespaces that have a LightsOutNamespaceSchedule —
-	// namespace-scoped schedules take precedence over this global schedule.
-	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
-	if err != nil {
-		logger.Error(err, "failed to filter namespaces with local schedules")
-		r.setErrorCondition(ctx, &schedule, err)
-		return ctrl.Result{}, err
-	}
+	// Namespace-scoped: only manage the schedule's own namespace
+	namespaces := []string{schedule.Namespace}
 
 	logger.Info("reconciling",
 		"namespaces", len(namespaces),
 		"nextUpscale", period.NextUpscale,
 		"nextDownscale", period.NextDownscale)
 
+	// Process workloads
 	scaleUp := period.State == "Up"
 
 	// Get rate limit config for requeue calculation
@@ -157,6 +142,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		labelArgoCDAppsDown(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.ArgoCD, schedule.Name, namespaces)
 	}
 
+	// Scale all workloads (handles collection, budget-based processing, and metrics)
 	scaleResult, err := r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit)
 	if err != nil {
 		logger.Error(err, "failed to scale workloads")
@@ -171,9 +157,8 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	stats := scaleResult.stats
 
-	// Update status
+	// Update status (LightsOutNamespaceScheduleStatus has no Namespaces field)
 	schedule.Status.State = lightsoutv1alpha1.ScheduleState(period.State)
-	schedule.Status.Namespaces = namespaces
 	schedule.Status.WorkloadStats = stats
 	schedule.Status.ObservedGeneration = schedule.Generation
 	schedule.Status.NextUpscaleTime = &metav1.Time{Time: period.NextUpscale}
@@ -193,7 +178,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
 		Reason:             "ReconcileSucceeded",
-		Message:            "Successfully reconciled schedule",
+		Message:            "Successfully reconciled namespace schedule",
 		ObservedGeneration: schedule.Generation,
 	})
 
@@ -205,23 +190,24 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Record events for scaling operations
 	recordScalingEvents(r.Recorder, &schedule, scaleUp, stats, namespaces)
 
-	// Record metrics
+	// Record metrics — use "namespace/name" as label to distinguish from global schedules
+	scheduleLabel := schedule.Namespace + "/" + schedule.Name
 	stateValue := float64(0)
 	if stillWarmingUp {
 		stateValue = 2
 	} else if schedule.Status.State == lightsoutv1alpha1.ScheduleStateUp {
 		stateValue = 1
 	}
-	ScheduleState.WithLabelValues(schedule.Name).Set(stateValue)
+	ScheduleState.WithLabelValues(scheduleLabel).Set(stateValue)
 
-	NextTransitionSeconds.WithLabelValues(schedule.Name, "upscale").Set(time.Until(period.NextUpscale).Seconds())
-	NextTransitionSeconds.WithLabelValues(schedule.Name, "downscale").Set(time.Until(period.NextDownscale).Seconds())
+	NextTransitionSeconds.WithLabelValues(scheduleLabel, "upscale").Set(time.Until(period.NextUpscale).Seconds())
+	NextTransitionSeconds.WithLabelValues(scheduleLabel, "downscale").Set(time.Until(period.NextDownscale).Seconds())
 
-	ManagedWorkloads.WithLabelValues(schedule.Name, "deployment").Set(float64(stats.DeploymentsManaged))
-	ManagedWorkloads.WithLabelValues(schedule.Name, "statefulset").Set(float64(stats.StatefulSetsManaged))
-	ManagedWorkloads.WithLabelValues(schedule.Name, "cronjob").Set(float64(stats.CronJobsManaged))
+	ManagedWorkloads.WithLabelValues(scheduleLabel, "deployment").Set(float64(stats.DeploymentsManaged))
+	ManagedWorkloads.WithLabelValues(scheduleLabel, "statefulset").Set(float64(stats.StatefulSetsManaged))
+	ManagedWorkloads.WithLabelValues(scheduleLabel, "cronjob").Set(float64(stats.CronJobsManaged))
 
-	LastReconcileTime.WithLabelValues(schedule.Name).SetToCurrentTime()
+	LastReconcileTime.WithLabelValues(scheduleLabel).SetToCurrentTime()
 
 	// Calculate requeue time
 	requeueAfter := calculateRequeueAfter(period, scaleUp, scaleResult, rateLimit, stillWarmingUp, now)
@@ -231,31 +217,27 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 }
 
 // scaleWorkloads delegates to the shared package-level scaleWorkloads function with
-// global-schedule-specific configuration (no ownership transfer, schedule name as metric label).
-func (r *LightsOutScheduleReconciler) scaleWorkloads(
+// namespace-schedule-specific configuration (ownership transfer enabled, ns/name as metric label).
+func (r *LightsOutNamespaceScheduleReconciler) scaleWorkloads(
 	ctx context.Context,
-	schedule *lightsoutv1alpha1.LightsOutSchedule,
+	schedule *lightsoutv1alpha1.LightsOutNamespaceSchedule,
 	namespaces []string,
 	scaleUp bool,
 	rateLimit *lightsoutv1alpha1.RateLimitConfig,
 ) (*scaleWorkloadsResult, error) {
 	cfg := scaleWorkloadsConfig{
 		ScheduleName:      schedule.Name,
-		ScheduleLabel:     schedule.Name,
-		ScheduleKind:      "schedule",
+		ScheduleLabel:     schedule.Namespace + "/" + schedule.Name,
+		ScheduleKind:      "namespace schedule",
 		Namespaces:        namespaces,
 		ScaleUp:           scaleUp,
 		RateLimit:         rateLimit,
-		TransferOwnership: false,
+		TransferOwnership: true,
 	}
-	result, err := scaleWorkloads(ctx, r.Client, &schedule.Spec.LightsOutScheduleCore, cfg, r.Recorder)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scale workloads: %w", err)
-	}
-	return result, nil
+	return scaleWorkloads(ctx, r.Client, &schedule.Spec.LightsOutScheduleCore, cfg, r.Recorder)
 }
 
-func (r *LightsOutScheduleReconciler) setErrorCondition(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, err error) {
+func (r *LightsOutNamespaceScheduleReconciler) setErrorCondition(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutNamespaceSchedule, err error) {
 	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionFalse,
@@ -269,74 +251,61 @@ func (r *LightsOutScheduleReconciler) setErrorCondition(ctx context.Context, sch
 }
 
 // handleDeletion restores all managed workloads to their original state before allowing deletion
-func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule) (ctrl.Result, error) {
+func (r *LightsOutNamespaceScheduleReconciler) handleDeletion(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutNamespaceSchedule) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("handling deletion, restoring managed workloads")
 
 	var restoreErrors []string
+	ns := schedule.Namespace
 
-	// Discover all namespaces this schedule manages
-	namespaces, err := DiscoverNamespaces(ctx, r.Client, &schedule.Spec)
+	// Restore Deployments
+	deployments, err := listManagedDeployments(ctx, r.Client, ns, schedule.Name)
 	if err != nil {
-		logger.Error(err, "failed to discover namespaces during cleanup")
-		// Continue with cleanup even if namespace discovery fails
-	}
-
-	// Filter out namespaces that have a LightsOutNamespaceSchedule —
-	// namespace-scoped schedules manage their own cleanup on deletion.
-	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
-	if err != nil {
-		logger.Error(err, "failed to filter namespaces with local schedules")
-		return ctrl.Result{}, err
-	}
-
-	// Restore workloads in each namespace
-	for _, ns := range namespaces {
-		deployments, err := listManagedDeployments(ctx, r.Client, ns, schedule.Name)
-		if err != nil {
-			restoreErrors = append(restoreErrors, fmt.Sprintf("list deployments in %s: %v", ns, err))
-		} else {
-			for i := range deployments {
-				result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true)
-				if err != nil {
-					restoreErrors = append(restoreErrors, fmt.Sprintf("deployment %s/%s: %v", ns, deployments[i].Name, err))
-				} else {
-					recordWorkloadEvent(r.Recorder, WorkloadFromDeployment(&deployments[i]), schedule.Name, "schedule", true, result)
-				}
+		restoreErrors = append(restoreErrors, fmt.Sprintf("list deployments in %s: %v", ns, err))
+	} else {
+		for i := range deployments {
+			result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true)
+			if err != nil {
+				restoreErrors = append(restoreErrors, fmt.Sprintf("deployment %s/%s: %v", ns, deployments[i].Name, err))
+			} else {
+				recordWorkloadEvent(r.Recorder, WorkloadFromDeployment(&deployments[i]), schedule.Name, "namespace schedule", true, result)
 			}
 		}
+	}
 
-		statefulsets, err := listManagedStatefulSets(ctx, r.Client, ns, schedule.Name)
-		if err != nil {
-			restoreErrors = append(restoreErrors, fmt.Sprintf("list statefulsets in %s: %v", ns, err))
-		} else {
-			for i := range statefulsets {
-				result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true)
-				if err != nil {
-					restoreErrors = append(restoreErrors, fmt.Sprintf("statefulset %s/%s: %v", ns, statefulsets[i].Name, err))
-				} else {
-					recordWorkloadEvent(r.Recorder, WorkloadFromStatefulSet(&statefulsets[i]), schedule.Name, "schedule", true, result)
-				}
+	// Restore StatefulSets
+	statefulsets, err := listManagedStatefulSets(ctx, r.Client, ns, schedule.Name)
+	if err != nil {
+		restoreErrors = append(restoreErrors, fmt.Sprintf("list statefulsets in %s: %v", ns, err))
+	} else {
+		for i := range statefulsets {
+			result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true)
+			if err != nil {
+				restoreErrors = append(restoreErrors, fmt.Sprintf("statefulset %s/%s: %v", ns, statefulsets[i].Name, err))
+			} else {
+				recordWorkloadEvent(r.Recorder, WorkloadFromStatefulSet(&statefulsets[i]), schedule.Name, "namespace schedule", true, result)
 			}
 		}
+	}
 
-		cronjobs, err := listManagedCronJobs(ctx, r.Client, ns, schedule.Name)
-		if err != nil {
-			restoreErrors = append(restoreErrors, fmt.Sprintf("list cronjobs in %s: %v", ns, err))
-		} else {
-			for i := range cronjobs {
-				result, err := ScaleCronJob(ctx, r.Client, &cronjobs[i], schedule.Name, true)
-				if err != nil {
-					restoreErrors = append(restoreErrors, fmt.Sprintf("cronjob %s/%s: %v", ns, cronjobs[i].Name, err))
-				} else {
-					recordWorkloadEvent(r.Recorder, WorkloadFromCronJob(&cronjobs[i]), schedule.Name, "schedule", true, result)
-				}
+	// Restore CronJobs
+	cronjobs, err := listManagedCronJobs(ctx, r.Client, ns, schedule.Name)
+	if err != nil {
+		restoreErrors = append(restoreErrors, fmt.Sprintf("list cronjobs in %s: %v", ns, err))
+	} else {
+		for i := range cronjobs {
+			result, err := ScaleCronJob(ctx, r.Client, &cronjobs[i], schedule.Name, true)
+			if err != nil {
+				restoreErrors = append(restoreErrors, fmt.Sprintf("cronjob %s/%s: %v", ns, cronjobs[i].Name, err))
+			} else {
+				recordWorkloadEvent(r.Recorder, WorkloadFromCronJob(&cronjobs[i]), schedule.Name, "namespace schedule", true, result)
 			}
 		}
 	}
 
 	// Cleanup ArgoCD Application labels
 	if schedule.Spec.ArgoCD != nil {
+		namespaces := []string{ns}
 		apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
 		if err != nil {
 			logger.Error(err, "failed to discover ArgoCD apps during cleanup")
@@ -376,50 +345,12 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 	return ctrl.Result{}, r.Update(ctx, schedule)
 }
 
-// calculateRequeueAfter returns how long to wait before the next reconciliation.
-// Batch-limited runs requeue after the batch delay (capped at the next transition).
-// Warming-up runs requeue at WarmupCheckInterval. Otherwise, requeue at the next transition.
-func calculateRequeueAfter(period *PeriodResult, scaleUp bool, scaleResult *scaleWorkloadsResult, rateLimit *lightsoutv1alpha1.RateLimitConfig, stillWarmingUp bool, now time.Time) time.Duration {
-	var timeUntilNext time.Duration
-	if scaleUp {
-		timeUntilNext = period.NextDownscale.Sub(now)
-	} else {
-		timeUntilNext = period.NextUpscale.Sub(now)
-	}
-
-	if scaleResult.batchLimitReached {
-		// More workloads to process — requeue after batch delay, but not later
-		// than the next period transition (so we don't miss direction changes).
-		requeueAfter := timeUntilNext
-		if rateLimit != nil && rateLimit.DelayBetweenBatches != nil {
-			if delay := rateLimit.DelayBetweenBatches.Duration; delay < requeueAfter {
-				requeueAfter = delay
-			}
-		}
-		return max(requeueAfter, time.Second)
-	}
-	if stillWarmingUp {
-		// ArgoCD apps are warming up — poll readiness at WarmupCheckInterval,
-		// but no later than the next period transition.
-		return max(min(constants.WarmupCheckInterval, timeUntilNext), time.Second)
-	}
-	// Defensive floor for the idle path — next transition is typically hours away.
-	return max(timeUntilNext, time.Minute)
-}
-
-func shouldProcessWorkloadType(types []lightsoutv1alpha1.WorkloadType, target lightsoutv1alpha1.WorkloadType) bool {
-	if len(types) == 0 {
-		return true // Process all types if none specified
-	}
-	return slices.Contains(types, target)
-}
-
 // SetupWithManager sets up the controller with the Manager.
-func (r *LightsOutScheduleReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorder("lightsout-controller")
+func (r *LightsOutNamespaceScheduleReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorder("lightsout-namespace-controller")
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&lightsoutv1alpha1.LightsOutSchedule{},
+		For(&lightsoutv1alpha1.LightsOutNamespaceSchedule{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Named("lightsoutschedule").
+		Named("lightsoutnamespaceschedule").
 		Complete(r)
 }

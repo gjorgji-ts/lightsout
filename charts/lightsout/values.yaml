@@ -72,6 +72,12 @@ webhook:
   # -- Base64-encoded CA bundle for webhook (required when certManager.enabled=false)
   caBundle: ""
 
+# -- Namespace schedule configuration
+namespaceSchedules:
+  # -- Enable the LightsOutNamespaceSchedule controller and CRD.
+  # -- When false, the controller is not started (the CRD is still installed).
+  enabled: true
+
 # -- cert-manager integration for automatic TLS certificate management
 # -- Only used when webhook.enabled=true
 certManager:

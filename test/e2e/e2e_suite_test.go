@@ -104,13 +104,22 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
-	By("waiting for controller to be ready")
+	By("waiting for controller rollout to complete")
 	Eventually(func(g Gomega) {
-		cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-			"-n", namespace, "-o", "jsonpath={.items[0].status.phase}")
+		cmd := exec.Command("kubectl", "get", "deployment", "lightsout-controller-manager",
+			"-n", namespace, "-o", "jsonpath={.status.readyReplicas}")
 		output, err := utils.Run(cmd)
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(output).To(Equal("Running"))
+		g.Expect(output).To(Equal("1"))
+	}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+	By("waiting for webhook certificate to be ready")
+	Eventually(func(g Gomega) {
+		cmd := exec.Command("kubectl", "get", "certificate", "serving-cert",
+			"-n", namespace, "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+		output, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(output).To(Equal("True"))
 	}, 2*time.Minute, 5*time.Second).Should(Succeed())
 })
 

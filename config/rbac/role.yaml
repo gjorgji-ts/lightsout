@@ -53,6 +53,7 @@ rules:
 - apiGroups:
   - lightsout.techsupport.mk
   resources:
+  - lightsoutnamespaceschedules
   - lightsoutschedules
   verbs:
   - create
@@ -65,12 +66,14 @@ rules:
 - apiGroups:
   - lightsout.techsupport.mk
   resources:
+  - lightsoutnamespaceschedules/finalizers
   - lightsoutschedules/finalizers
   verbs:
   - update
 - apiGroups:
   - lightsout.techsupport.mk
   resources:
+  - lightsoutnamespaceschedules/status
   - lightsoutschedules/status
   verbs:
   - get
