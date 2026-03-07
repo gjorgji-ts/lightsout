@@ -42,6 +42,7 @@ jobs:
           major_pattern: "/!:|BREAKING CHANGE:/"
           minor_pattern: "/feat(\\(.+\\))?:/"
           version_format: "${major}.${minor}.${patch}"
+          change_path: "cmd api internal charts config Dockerfile go.mod go.sum .goreleaser.yml"
 
       - name: Check if version changed
         id: check

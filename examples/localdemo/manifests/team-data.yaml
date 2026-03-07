@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-api
+  namespace: team-data
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: data-api
+  template:
+    metadata:
+      labels:
+        app: data-api
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: data-store
+  namespace: team-data
+spec:
+  serviceName: data-store
+  replicas: 3
+  selector:
+    matchLabels:
+      app: data-store
+  template:
+    metadata:
+      labels:
+        app: data-store
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: data-pipeline
+  namespace: team-data
+spec:
+  schedule: "*/15 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: pipeline
+              image: busybox:latest
+              command: ["sh", "-c", "echo 'Running pipeline...' && sleep 3 && echo 'Done.'"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 16Mi
+          restartPolicy: OnFailure
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: data-schedule
+  namespace: team-data
+spec:
+  upscale: "*/6 * * * *"
+  downscale: "3-59/6 * * * *"
+  timezone: "UTC"
