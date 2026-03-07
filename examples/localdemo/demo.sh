@@ -120,6 +120,8 @@ cmd_up() {
     kubectl apply -f "$SCRIPT_DIR/manifests/namespaces.yaml"
     kubectl apply -f "$SCRIPT_DIR/manifests/apps-frontend.yaml"
     kubectl apply -f "$SCRIPT_DIR/manifests/apps-backend.yaml"
+    kubectl apply -f "$SCRIPT_DIR/manifests/team-data.yaml"
+    kubectl apply -f "$SCRIPT_DIR/manifests/team-platform.yaml"
 
     log "Waiting for demo apps to be ready..."
     kubectl wait deployment --all \
@@ -129,6 +131,14 @@ cmd_up() {
     kubectl wait deployment --all \
         --for=condition=Available \
         --namespace team-backend \
+        --timeout=120s
+    kubectl wait deployment --all \
+        --for=condition=Available \
+        --namespace team-data \
+        --timeout=120s
+    kubectl wait deployment --all \
+        --for=condition=Available \
+        --namespace team-platform \
         --timeout=120s
 
     # Wait for LightsOutSchedule CRD and webhook to be ready
@@ -160,6 +170,11 @@ cmd_up() {
     echo -e "  The demo schedule cycles every ~3 minutes."
     echo -e "  Open the ${CYAN}LightsOut - Overview${NC} dashboard in Grafana to watch."
     echo ""
+    echo -e "  To simulate namespace-scoped schedule adoption for ${CYAN}team-platform${NC}:"
+    echo -e "  ${YELLOW}kubectl apply -f manifests/team-platform-ns-schedule.yaml${NC}"
+    echo -e "  The namespace will stop being managed by the cluster schedule"
+    echo -e "  and be taken over by its own namespace-scoped schedule."
+    echo ""
     echo -e "  Run ${YELLOW}./demo.sh status${NC} to check workload state."
     echo -e "  Run ${YELLOW}./demo.sh down${NC} to tear everything down."
     echo ""
@@ -180,6 +195,12 @@ cmd_status() {
     echo ""
     echo -e "${CYAN}=== team-backend ===${NC}"
     kubectl get deployments,statefulsets,cronjobs -n team-backend 2>/dev/null || true
+    echo ""
+    echo -e "${CYAN}=== team-data ===${NC}"
+    kubectl get deployments,statefulsets,cronjobs -n team-data 2>/dev/null || true
+    echo ""
+    echo -e "${CYAN}=== team-platform ===${NC}"
+    kubectl get deployments,statefulsets -n team-platform 2>/dev/null || true
     echo ""
     echo -e "Grafana: ${GREEN}http://localhost:30080${NC}  (admin / <password from initial setup>)"
 }
