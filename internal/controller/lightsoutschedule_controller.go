@@ -33,8 +33,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 	"github.com/gjorgji-ts/lightsout/internal/constants"
@@ -57,7 +59,9 @@ type LightsOutScheduleReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch;update;patch
 
 func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -126,7 +130,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, err
 	}
 
-	// Filter out namespaces that have a LightsOutNamespaceSchedule —
+	// Filter out namespaces that have a LightsOutNamespaceSchedule -
 	// namespace-scoped schedules take precedence over this global schedule.
 	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
 	if err != nil {
@@ -282,7 +286,7 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 		// Continue with cleanup even if namespace discovery fails
 	}
 
-	// Filter out namespaces that have a LightsOutNamespaceSchedule —
+	// Filter out namespaces that have a LightsOutNamespaceSchedule -
 	// namespace-scoped schedules manage their own cleanup on deletion.
 	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
 	if err != nil {
@@ -292,12 +296,17 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 
 	// Restore workloads in each namespace
 	for _, ns := range namespaces {
+		hpaList, hpaErr := listHPAs(ctx, r.Client, ns)
+		if hpaErr != nil {
+			logger.Error(hpaErr, "failed to list HPAs during deletion, HPA restore skipped", "namespace", ns)
+		}
+
 		deployments, err := listManagedDeployments(ctx, r.Client, ns, schedule.Name)
 		if err != nil {
 			restoreErrors = append(restoreErrors, fmt.Sprintf("list deployments in %s: %v", ns, err))
 		} else {
 			for i := range deployments {
-				result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true)
+				result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true, hpaList)
 				if err != nil {
 					restoreErrors = append(restoreErrors, fmt.Sprintf("deployment %s/%s: %v", ns, deployments[i].Name, err))
 				} else {
@@ -311,7 +320,7 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 			restoreErrors = append(restoreErrors, fmt.Sprintf("list statefulsets in %s: %v", ns, err))
 		} else {
 			for i := range statefulsets {
-				result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true)
+				result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true, hpaList)
 				if err != nil {
 					restoreErrors = append(restoreErrors, fmt.Sprintf("statefulset %s/%s: %v", ns, statefulsets[i].Name, err))
 				} else {
@@ -388,7 +397,7 @@ func calculateRequeueAfter(period *PeriodResult, scaleUp bool, scaleResult *scal
 	}
 
 	if scaleResult.batchLimitReached {
-		// More workloads to process — requeue after batch delay, but not later
+		// More workloads to process - requeue after batch delay, but not later
 		// than the next period transition (so we don't miss direction changes).
 		requeueAfter := timeUntilNext
 		if rateLimit != nil && rateLimit.DelayBetweenBatches != nil {
@@ -399,11 +408,11 @@ func calculateRequeueAfter(period *PeriodResult, scaleUp bool, scaleResult *scal
 		return max(requeueAfter, time.Second)
 	}
 	if stillWarmingUp {
-		// ArgoCD apps are warming up — poll readiness at WarmupCheckInterval,
+		// ArgoCD apps are warming up - poll readiness at WarmupCheckInterval,
 		// but no later than the next period transition.
 		return max(min(constants.WarmupCheckInterval, timeUntilNext), time.Second)
 	}
-	// Defensive floor for the idle path — next transition is typically hours away.
+	// Defensive floor for the idle path - next transition is typically hours away.
 	return max(timeUntilNext, time.Minute)
 }
 
@@ -420,6 +429,11 @@ func (r *LightsOutScheduleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&lightsoutv1alpha1.LightsOutSchedule{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Watch HPAs to populate the informer cache so c.List works during reconciliation.
+		// HPA changes do not trigger schedule reconciles (no-op handler).
+		Watches(hpaWatchObject(), handler.EnqueueRequestsFromMapFunc(
+			func(_ context.Context, _ client.Object) []reconcile.Request { return nil },
+		)).
 		Named("lightsoutschedule").
 		Complete(r)
 }

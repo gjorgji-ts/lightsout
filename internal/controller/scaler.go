@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -23,9 +24,10 @@ type ScaleResult struct {
 	NewValue      string
 }
 
-// ScaleDeployment scales a deployment up or down based on the period
-// scaleUp=true means restore to original replicas, scaleUp=false means scale to 0
-func ScaleDeployment(ctx context.Context, c client.Client, deploy *appsv1.Deployment, scheduleName string, scaleUp bool) (*ScaleResult, error) {
+// ScaleDeployment scales a deployment up or down based on the period.
+// scaleUp=true means restore to original replicas, scaleUp=false means scale to 0.
+// hpaList is the pre-fetched HPA list for the deployment's namespace; pass nil to skip HPA handling.
+func ScaleDeployment(ctx context.Context, c client.Client, deploy *appsv1.Deployment, scheduleName string, scaleUp bool, hpaList *unstructured.UnstructuredList) (*ScaleResult, error) {
 	logger := log.FromContext(ctx).WithValues("deployment", deploy.Name, "namespace", deploy.Namespace)
 
 	if deploy.Annotations == nil {
@@ -36,12 +38,12 @@ func ScaleDeployment(ctx context.Context, c client.Client, deploy *appsv1.Deploy
 	originalReplicas := deploy.Annotations[constants.OriginalReplicasAnnotation]
 
 	if scaleUp {
-		return scaleDeploymentUp(ctx, c, deploy, scheduleName, managedBy, originalReplicas, logger)
+		return scaleDeploymentUp(ctx, c, deploy, scheduleName, managedBy, originalReplicas, hpaList, logger)
 	}
-	return scaleDeploymentDown(ctx, c, deploy, scheduleName, managedBy, originalReplicas, logger)
+	return scaleDeploymentDown(ctx, c, deploy, scheduleName, managedBy, originalReplicas, hpaList, logger)
 }
 
-func scaleDeploymentDown(ctx context.Context, c client.Client, deploy *appsv1.Deployment, scheduleName, managedBy, originalReplicas string, logger logr.Logger) (*ScaleResult, error) {
+func scaleDeploymentDown(ctx context.Context, c client.Client, deploy *appsv1.Deployment, scheduleName, managedBy, originalReplicas string, hpaList *unstructured.UnstructuredList, logger logr.Logger) (*ScaleResult, error) {
 	// Skip if managed by different schedule
 	if managedBy != "" && managedBy != scheduleName {
 		logger.Info("skipping deployment: managed by different schedule", "managedBy", managedBy)
@@ -68,6 +70,12 @@ func scaleDeploymentDown(ctx context.Context, c client.Client, deploy *appsv1.De
 		return &ScaleResult{Skipped: true, SkipReason: "already at 0 replicas"}, nil
 	}
 
+	// Disable HPA scale-up before zeroing replicas to prevent HPA fight-back.
+	// Non-fatal: log the error and continue so workload scaling is never blocked.
+	if hpaErr := PatchHPAForDownscale(ctx, c, hpaList, deploy.Namespace, "Deployment", deploy.Name, scheduleName); hpaErr != nil {
+		logger.Error(hpaErr, "failed to patch HPA for downscale, continuing")
+	}
+
 	// Scale down
 	deploy.Annotations[constants.OriginalReplicasAnnotation] = strconv.Itoa(int(currentReplicas))
 	deploy.Annotations[constants.ManagedByAnnotation] = scheduleName
@@ -89,9 +97,15 @@ func scaleDeploymentDown(ctx context.Context, c client.Client, deploy *appsv1.De
 	}, nil
 }
 
-func scaleDeploymentUp(ctx context.Context, c client.Client, deploy *appsv1.Deployment, scheduleName, managedBy, originalReplicas string, logger logr.Logger) (*ScaleResult, error) {
-	// Skip if no original-replicas annotation (not managed by us)
+func scaleDeploymentUp(ctx context.Context, c client.Client, deploy *appsv1.Deployment, scheduleName, managedBy, originalReplicas string, hpaList *unstructured.UnstructuredList, logger logr.Logger) (*ScaleResult, error) {
+	// Skip if no original-replicas annotation (not managed by us).
+	// Still attempt HPA restore: if the controller crashed after the workload update but before
+	// RestoreHPA ran, the HPA is stuck with scaleUp disabled and dangling annotations. RestoreHPA
+	// is a no-op when the HPA has no managed-by annotation (genuine skip case).
 	if originalReplicas == "" {
+		if hpaErr := RestoreHPA(ctx, c, hpaList, deploy.Namespace, "Deployment", deploy.Name, scheduleName); hpaErr != nil {
+			logger.Error(hpaErr, "failed to restore HPA during skip check, continuing")
+		}
 		logger.V(1).Info("skipping deployment: no original-replicas annotation")
 		return &ScaleResult{Skipped: true, SkipReason: "not managed by lightsout"}, nil
 	}
@@ -123,6 +137,11 @@ func scaleDeploymentUp(ctx context.Context, c client.Client, deploy *appsv1.Depl
 		return nil, err
 	}
 
+	// Restore HPA minReplicas after replica write. Non-fatal.
+	if hpaErr := RestoreHPA(ctx, c, hpaList, deploy.Namespace, "Deployment", deploy.Name, scheduleName); hpaErr != nil {
+		logger.Error(hpaErr, "failed to restore HPA after upscale, continuing")
+	}
+
 	logger.Info("scaled up deployment", "from", 0, "to", replicas)
 	return &ScaleResult{
 		PreviousValue: "0",
@@ -130,9 +149,10 @@ func scaleDeploymentUp(ctx context.Context, c client.Client, deploy *appsv1.Depl
 	}, nil
 }
 
-// ScaleStatefulSet scales a statefulset up or down based on the period
-// scaleUp=true means restore to original replicas, scaleUp=false means scale to 0
-func ScaleStatefulSet(ctx context.Context, c client.Client, sts *appsv1.StatefulSet, scheduleName string, scaleUp bool) (*ScaleResult, error) {
+// ScaleStatefulSet scales a statefulset up or down based on the period.
+// scaleUp=true means restore to original replicas, scaleUp=false means scale to 0.
+// hpaList is the pre-fetched HPA list for the statefulset's namespace, pass nil to skip HPA handling.
+func ScaleStatefulSet(ctx context.Context, c client.Client, sts *appsv1.StatefulSet, scheduleName string, scaleUp bool, hpaList *unstructured.UnstructuredList) (*ScaleResult, error) {
 	logger := log.FromContext(ctx).WithValues("statefulset", sts.Name, "namespace", sts.Namespace)
 
 	if sts.Annotations == nil {
@@ -143,12 +163,12 @@ func ScaleStatefulSet(ctx context.Context, c client.Client, sts *appsv1.Stateful
 	originalReplicas := sts.Annotations[constants.OriginalReplicasAnnotation]
 
 	if scaleUp {
-		return scaleStatefulSetUp(ctx, c, sts, scheduleName, managedBy, originalReplicas, logger)
+		return scaleStatefulSetUp(ctx, c, sts, scheduleName, managedBy, originalReplicas, hpaList, logger)
 	}
-	return scaleStatefulSetDown(ctx, c, sts, scheduleName, managedBy, originalReplicas, logger)
+	return scaleStatefulSetDown(ctx, c, sts, scheduleName, managedBy, originalReplicas, hpaList, logger)
 }
 
-func scaleStatefulSetDown(ctx context.Context, c client.Client, sts *appsv1.StatefulSet, scheduleName, managedBy, originalReplicas string, logger logr.Logger) (*ScaleResult, error) {
+func scaleStatefulSetDown(ctx context.Context, c client.Client, sts *appsv1.StatefulSet, scheduleName, managedBy, originalReplicas string, hpaList *unstructured.UnstructuredList, logger logr.Logger) (*ScaleResult, error) {
 	// Skip if managed by different schedule
 	if managedBy != "" && managedBy != scheduleName {
 		logger.Info("skipping statefulset: managed by different schedule", "managedBy", managedBy)
@@ -175,6 +195,12 @@ func scaleStatefulSetDown(ctx context.Context, c client.Client, sts *appsv1.Stat
 		return &ScaleResult{Skipped: true, SkipReason: "already at 0 replicas"}, nil
 	}
 
+	// Disable HPA scale-up before zeroing replicas to prevent HPA fight-back.
+	// Non-fatal: log the error and continue so workload scaling is never blocked.
+	if hpaErr := PatchHPAForDownscale(ctx, c, hpaList, sts.Namespace, "StatefulSet", sts.Name, scheduleName); hpaErr != nil {
+		logger.Error(hpaErr, "failed to patch HPA for downscale, continuing")
+	}
+
 	// Scale down
 	sts.Annotations[constants.OriginalReplicasAnnotation] = strconv.Itoa(int(currentReplicas))
 	sts.Annotations[constants.ManagedByAnnotation] = scheduleName
@@ -196,9 +222,15 @@ func scaleStatefulSetDown(ctx context.Context, c client.Client, sts *appsv1.Stat
 	}, nil
 }
 
-func scaleStatefulSetUp(ctx context.Context, c client.Client, sts *appsv1.StatefulSet, scheduleName, managedBy, originalReplicas string, logger logr.Logger) (*ScaleResult, error) {
-	// Skip if no original-replicas annotation (not managed by us)
+func scaleStatefulSetUp(ctx context.Context, c client.Client, sts *appsv1.StatefulSet, scheduleName, managedBy, originalReplicas string, hpaList *unstructured.UnstructuredList, logger logr.Logger) (*ScaleResult, error) {
+	// Skip if no original-replicas annotation (not managed by us).
+	// Still attempt HPA restore: if the controller crashed after the workload update but before
+	// RestoreHPA ran, the HPA is stuck with scaleUp disabled and dangling annotations. RestoreHPA
+	// is a no-op when the HPA has no managed-by annotation (genuine skip case).
 	if originalReplicas == "" {
+		if hpaErr := RestoreHPA(ctx, c, hpaList, sts.Namespace, "StatefulSet", sts.Name, scheduleName); hpaErr != nil {
+			logger.Error(hpaErr, "failed to restore HPA during skip check, continuing")
+		}
 		logger.V(1).Info("skipping statefulset: no original-replicas annotation")
 		return &ScaleResult{Skipped: true, SkipReason: "not managed by lightsout"}, nil
 	}
@@ -228,6 +260,11 @@ func scaleStatefulSetUp(ctx context.Context, c client.Client, sts *appsv1.Statef
 
 	if err := c.Update(ctx, sts); err != nil {
 		return nil, err
+	}
+
+	// Restore HPA minReplicas after replica write. Non-fatal.
+	if hpaErr := RestoreHPA(ctx, c, hpaList, sts.Namespace, "StatefulSet", sts.Name, scheduleName); hpaErr != nil {
+		logger.Error(hpaErr, "failed to restore HPA after upscale, continuing")
 	}
 
 	logger.Info("scaled up statefulset", "from", 0, "to", replicas)

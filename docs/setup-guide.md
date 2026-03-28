@@ -2,8 +2,8 @@
 
 This guide covers two installation paths:
 
-1. **Basic** — controller only, no webhooks
-2. **With webhooks and cert-manager** — adds validation, defaulting, and overlap detection
+1. **Basic** - controller only, no webhooks
+2. **With webhooks and cert-manager** - adds validation, defaulting, and overlap detection
 
 ## Prerequisites
 
@@ -14,7 +14,7 @@ This guide covers two installation paths:
 
 ## Basic Install
 
-This installs the LightsOut controller without admission webhooks. Schedules will not be validated on creation — the controller will still work, but invalid cron expressions or misconfigurations won't be caught until reconciliation.
+This installs the LightsOut controller without admission webhooks. Schedules will not be validated on creation - the controller will still work, but invalid cron expressions or misconfigurations won't be caught until reconciliation.
 
 ### 1. Install
 

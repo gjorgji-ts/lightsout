@@ -14,6 +14,11 @@ const (
 	// OriginalSuspendAnnotation stores who suspended the CronJob ("lightsout" or "user")
 	OriginalSuspendAnnotation = AnnotationPrefix + "original-suspend"
 
+	// OriginalHPAScaleUpPolicyAnnotation stores the HPA's original
+	// spec.behavior.scaleUp.selectPolicy value before LightsOut sets it to "Disabled"
+	// during downscale. Empty string means the field was absent (default behaviour).
+	OriginalHPAScaleUpPolicyAnnotation = AnnotationPrefix + "original-hpa-scale-up-policy"
+
 	// ManagedByAnnotation stores the name of the Schedule managing this workload
 	ManagedByAnnotation = AnnotationPrefix + "managed-by"
 

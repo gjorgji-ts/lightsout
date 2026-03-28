@@ -11,8 +11,9 @@ The LightsOut controller requires **cluster-wide permissions** to modify workloa
 | Deployments | apps | get, list, watch, patch, update | Scale replicas to 0 during off-hours, restore during business hours |
 | StatefulSets | apps | get, list, watch, patch, update | Scale replicas to 0 during off-hours, restore during business hours |
 | CronJobs | batch | get, list, watch, patch, update | Suspend/unsuspend scheduled jobs |
+| HorizontalPodAutoscalers | autoscaling | get, list, watch, update, patch | Disable scale-up during downscale to prevent fight-back, restore on upscale |
 | Namespaces | core | get, list, watch | Discover namespaces for namespace selectors |
-| Events | core | create, patch | Record scaling events for observability |
+| Events | core, events.k8s.io | create, patch | Record scaling events for observability (controller-runtime uses the `events.k8s.io` API group on modern clusters) |
 | LightsOutSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage cluster-scoped schedules |
 | LightsOutNamespaceSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage namespace-scoped schedules; global controller lists these to implement precedence |
 | Applications | argoproj.io | get, list, watch, update, patch | Label ArgoCD Application CRDs during scaling (optional) |

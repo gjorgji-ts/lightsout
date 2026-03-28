@@ -88,7 +88,7 @@ This is only needed if Applications are managed declaratively through Git. If yo
 
 ### `RespectIgnoreDifferences` Sync Option
 
-By default, `ignoreDifferences` only suppresses the OutOfSync indicator in the UI — a sync operation will still overwrite LightsOut's changes. To prevent this, each Application must include:
+By default, `ignoreDifferences` only suppresses the OutOfSync indicator in the UI - a sync operation will still overwrite LightsOut's changes. To prevent this, each Application must include:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -134,7 +134,7 @@ During upscale, the `state` label transitions to `warming-up` and the following 
 |------------|-------|---------|
 | `lightsout.techsupport.mk/warming-up-since` | RFC3339 timestamp | Records when warming-up began; used to enforce `warmupTimeout` across controller restarts |
 
-Once all Deployments and StatefulSets in the target namespace have all their desired replicas ready — or the `warmupTimeout` elapses — both labels and the annotation are removed, leaving the Application CRD pristine.
+Once all Deployments and StatefulSets in the target namespace have all their desired replicas ready - or the `warmupTimeout` elapses - both labels and the annotation are removed, leaving the Application CRD pristine.
 
 ### Execution Ordering
 

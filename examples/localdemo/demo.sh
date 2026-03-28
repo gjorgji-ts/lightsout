@@ -73,6 +73,15 @@ cmd_up() {
         --namespace cert-manager \
         --timeout=120s
 
+    # Install metrics-server (Kind requires --kubelet-insecure-tls due to self-signed certs)
+    log "Installing metrics-server..."
+    helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ 2>/dev/null || true
+    helm repo update metrics-server
+    helm upgrade --install metrics-server metrics-server/metrics-server \
+        --namespace kube-system \
+        --set args={--kubelet-insecure-tls} \
+        --wait --timeout 2m
+
     # Install kube-prometheus-stack
     log "Installing kube-prometheus-stack..."
     helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true

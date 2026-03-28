@@ -27,13 +27,14 @@ When business hours resume, LightsOut restores workloads to their original repli
 ## Features
 
 - **Cron-based scheduling** with IANA timezone support
-- **Manages Deployments, StatefulSets, and CronJobs** — scales replicas to zero or suspends CronJobs
-- **Flexible namespace targeting** — label selectors, explicit lists, and exclusions
-- **Namespace-scoped schedules** — developers can define their own schedules per namespace, independent of global schedules
-- **Rate-limited scaling** — batch workloads to avoid resource spikes
-- **Admission webhooks** — validates schedules and detects overlaps before they're applied
-- **ArgoCD integration** — optional labeling of ArgoCD Application CRDs to prevent false alerts during downscale
-- **Prometheus metrics** — observe schedule state, scaling operations, errors, and durations
+- **Manages Deployments, StatefulSets, and CronJobs** - scales replicas to zero or suspends CronJobs
+- **HPA-aware scaling** - automatically patches `spec.minReplicas` on attached HorizontalPodAutoscalers to prevent fight-back, then restores on upscale
+- **Flexible namespace targeting** - label selectors, explicit lists, and exclusions
+- **Namespace-scoped schedules** - developers can define their own schedules per namespace, independent of global schedules
+- **Rate-limited scaling** - batch workloads to avoid resource spikes
+- **Admission webhooks** - validates schedules and detects overlaps before they're applied
+- **ArgoCD integration** - optional labeling of ArgoCD Application CRDs to prevent false alerts during downscale
+- **Prometheus metrics** - observe schedule state, scaling operations, errors, and durations
 
 ## Quick Start
 
@@ -78,8 +79,8 @@ For production setups with webhook validation, see the [Setup Guide](docs/setup-
 
 LightsOut runs as a controller that watches two custom resource types:
 
-- **`LightsOutSchedule`** (cluster-scoped) — for platform teams managing cost policies across multiple namespaces. Supports label selectors and explicit namespace lists.
-- **`LightsOutNamespaceSchedule`** (namespace-scoped) — for developers who want to define their own schedule for their namespace. When a namespace schedule exists, any global schedule targeting that namespace automatically skips it.
+- **`LightsOutSchedule`** (cluster-scoped) - for platform teams managing cost policies across multiple namespaces. Supports label selectors and explicit namespace lists.
+- **`LightsOutNamespaceSchedule`** (namespace-scoped) - for developers who want to define their own schedule for their namespace. When a namespace schedule exists, any global schedule targeting that namespace automatically skips it.
 
 On each reconciliation, the controller calculates whether the current time falls in an "up" or "down" period based on your cron expressions, discovers target namespaces and workloads, and scales accordingly. Original replica counts are stored in annotations so they can be restored exactly.
 
@@ -110,7 +111,7 @@ At least one of `namespaceSelector` or `namespaces` must be specified.
 
 ### `LightsOutNamespaceSchedule` (namespace-scoped)
 
-Created by developers in their own namespace. No namespace selection fields — the schedule always manages the namespace it lives in. Supports all the same scheduling fields as `LightsOutSchedule`.
+Created by developers in their own namespace. No namespace selection fields - the schedule always manages the namespace it lives in. Supports all the same scheduling fields as `LightsOutSchedule`.
 
 ```yaml
 apiVersion: lightsout.techsupport.mk/v1alpha1
@@ -193,12 +194,13 @@ This approach also works with [Cluster Autoscaler](https://github.com/kubernetes
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — how LightsOut works internally
-- [ArgoCD Integration](docs/argocd.md) — prevent false alerts when scaling down
-- [Setup Guide](docs/setup-guide.md) — installation with and without webhooks
-- [Security Model](docs/security-model.md) — RBAC, risks, and mitigations
-- [Examples](examples/) — sample schedule configurations
+- [Architecture](docs/architecture.md) - how LightsOut works internally
+- [HPA Integration](docs/hpa.md) - automatic HorizontalPodAutoscaler handling
+- [ArgoCD Integration](docs/argocd.md) - prevent false alerts when scaling down
+- [Setup Guide](docs/setup-guide.md) - installation with and without webhooks
+- [Security Model](docs/security-model.md) - RBAC, risks, and mitigations
+- [Examples](examples/) - sample schedule configurations
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+Apache License 2.0 - see [LICENSE](LICENSE) for details.

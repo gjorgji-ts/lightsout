@@ -32,8 +32,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 	"github.com/gjorgji-ts/lightsout/internal/constants"
@@ -55,7 +57,9 @@ type LightsOutNamespaceScheduleReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch;update;patch
 
 func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -190,7 +194,7 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 	// Record events for scaling operations
 	recordScalingEvents(r.Recorder, &schedule, scaleUp, stats, namespaces)
 
-	// Record metrics — use "namespace/name" as label to distinguish from global schedules
+	// Record metrics - use "namespace/name" as label to distinguish from global schedules
 	scheduleLabel := schedule.Namespace + "/" + schedule.Name
 	stateValue := float64(0)
 	if stillWarmingUp {
@@ -258,13 +262,18 @@ func (r *LightsOutNamespaceScheduleReconciler) handleDeletion(ctx context.Contex
 	var restoreErrors []string
 	ns := schedule.Namespace
 
+	hpaList, hpaErr := listHPAs(ctx, r.Client, ns)
+	if hpaErr != nil {
+		logger.Error(hpaErr, "failed to list HPAs during deletion, HPA restore skipped", "namespace", ns)
+	}
+
 	// Restore Deployments
 	deployments, err := listManagedDeployments(ctx, r.Client, ns, schedule.Name)
 	if err != nil {
 		restoreErrors = append(restoreErrors, fmt.Sprintf("list deployments in %s: %v", ns, err))
 	} else {
 		for i := range deployments {
-			result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true)
+			result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true, hpaList)
 			if err != nil {
 				restoreErrors = append(restoreErrors, fmt.Sprintf("deployment %s/%s: %v", ns, deployments[i].Name, err))
 			} else {
@@ -279,7 +288,7 @@ func (r *LightsOutNamespaceScheduleReconciler) handleDeletion(ctx context.Contex
 		restoreErrors = append(restoreErrors, fmt.Sprintf("list statefulsets in %s: %v", ns, err))
 	} else {
 		for i := range statefulsets {
-			result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true)
+			result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true, hpaList)
 			if err != nil {
 				restoreErrors = append(restoreErrors, fmt.Sprintf("statefulset %s/%s: %v", ns, statefulsets[i].Name, err))
 			} else {
@@ -351,6 +360,11 @@ func (r *LightsOutNamespaceScheduleReconciler) SetupWithManager(mgr ctrl.Manager
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&lightsoutv1alpha1.LightsOutNamespaceSchedule{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		// Watch HPAs to populate the informer cache so c.List works during reconciliation.
+		// HPA changes do not trigger schedule reconciles (no-op handler).
+		Watches(hpaWatchObject(), handler.EnqueueRequestsFromMapFunc(
+			func(_ context.Context, _ client.Object) []reconcile.Request { return nil },
+		)).
 		Named("lightsoutnamespaceschedule").
 		Complete(r)
 }
