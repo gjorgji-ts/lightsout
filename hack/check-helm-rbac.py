@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["pyyaml"]
+# ///
 """
 Verify that the Helm chart ClusterRole rules
 (charts/lightsout/templates/clusterrole.yaml) are in sync with the

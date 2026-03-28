@@ -51,7 +51,7 @@ helm-crds: manifests ## Sync generated CRDs into the Helm chart directory.
 
 .PHONY: helm-rbac-check
 helm-rbac-check: ## Verify Helm chart ClusterRole rules are in sync with config/rbac/role.yaml.
-	python3 hack/check-helm-rbac.py
+	if command -v uv > /dev/null 2>&1; then uv run hack/check-helm-rbac.py; else python3 hack/check-helm-rbac.py; fi
 
 .PHONY: helm-sync
 helm-sync: helm-crds helm-rbac-check ## Sync CRDs and verify RBAC rules into the Helm chart (run after 'make manifests').

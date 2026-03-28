@@ -6,6 +6,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -280,7 +281,7 @@ func collectNamespaceCronJobs(ctx context.Context, c client.Client, ns string, c
 // the controller framework.
 //
 // Skipped workloads (already at target state) do not consume budget, making re-entry
-// after requeue cheap — the reconciler naturally picks up where it left off via
+// after requeue cheap - the reconciler naturally picks up where it left off via
 // annotation-based idempotency.
 func scaleWorkloads(
 	ctx context.Context,
@@ -294,6 +295,20 @@ func scaleWorkloads(
 	workloads, err := collectWorkloads(ctx, c, cfg.Namespaces, core, cfg.ScheduleName, cfg.TransferOwnership)
 	if err != nil {
 		return nil, err
+	}
+
+	// Pre-fetch HPA lists once per namespace so every ScaleDeployment/ScaleStatefulSet call in
+	// the loop below reuses the same in-memory snapshot instead of issuing a separate List call
+	// per workload (O(1) API calls per namespace instead of O(workloads)).
+	hpaLists := make(map[string]*unstructured.UnstructuredList, len(cfg.Namespaces))
+	for _, ns := range cfg.Namespaces {
+		list, hpaErr := listHPAs(ctx, c, ns)
+		if hpaErr != nil {
+			logger.Error(hpaErr, "failed to list HPAs, HPA integration disabled for namespace", "namespace", ns)
+			// nil entry - PatchHPAForDownscale/RestoreHPA gracefully no-op for this namespace
+		} else {
+			hpaLists[ns] = list
+		}
 	}
 
 	// Determine budget: unlimited (-1) if no rate limit, otherwise batchSize
@@ -330,9 +345,9 @@ func scaleWorkloads(
 
 		switch w.Type {
 		case WorkloadTypeDeployment:
-			scaleResult, scaleErr = ScaleDeployment(ctx, c, w.Deployment, cfg.ScheduleName, cfg.ScaleUp)
+			scaleResult, scaleErr = ScaleDeployment(ctx, c, w.Deployment, cfg.ScheduleName, cfg.ScaleUp, hpaLists[w.Namespace])
 		case WorkloadTypeStatefulSet:
-			scaleResult, scaleErr = ScaleStatefulSet(ctx, c, w.StatefulSet, cfg.ScheduleName, cfg.ScaleUp)
+			scaleResult, scaleErr = ScaleStatefulSet(ctx, c, w.StatefulSet, cfg.ScheduleName, cfg.ScaleUp, hpaLists[w.Namespace])
 		case WorkloadTypeCronJob:
 			scaleResult, scaleErr = ScaleCronJob(ctx, c, w.CronJob, cfg.ScheduleName, cfg.ScaleUp)
 		}
@@ -382,7 +397,7 @@ func scaleWorkloads(
 		}
 	}
 
-	// All workloads processed — record metrics
+	// All workloads processed - record metrics
 	ScalingDurationSeconds.WithLabelValues(cfg.ScheduleLabel, direction).Observe(time.Since(startTime).Seconds())
 	if totalProcessed > 0 {
 		ScalingBatchesTotal.WithLabelValues(cfg.ScheduleLabel, direction).Inc()

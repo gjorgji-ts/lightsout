@@ -10,8 +10,8 @@ Kubernetes cost optimization has two layers:
 
 ```mermaid
 flowchart TD
-    LO["<b>Workload Layer — LightsOut</b><br/>Scales Deployments, StatefulSets, CronJobs<br/>to zero during off-hours"]
-    K["<b>Node Layer — Karpenter / Cluster Autoscaler</b><br/>Detects empty nodes and deprovisions them"]
+    LO["<b>Workload Layer - LightsOut</b><br/>Scales Deployments, StatefulSets, CronJobs<br/>to zero during off-hours"]
+    K["<b>Node Layer - Karpenter / Cluster Autoscaler</b><br/>Detects empty nodes and deprovisions them"]
     C["<b>Cloud Provider</b><br/>No nodes → no compute charges"]
 
     LO -->|"nodes become idle"| K
@@ -70,7 +70,7 @@ flowchart TD
 
 LightsOut runs two reconcilers in the same operator process.
 
-**`LightsOutScheduleReconciler`** (`internal/controller/lightsoutschedule_controller.go`) — the cluster-scoped reconciler. On each reconciliation cycle it:
+**`LightsOutScheduleReconciler`** (`internal/controller/lightsoutschedule_controller.go`) - the cluster-scoped reconciler. On each reconciliation cycle it:
 
 - Reads the `LightsOutSchedule` spec
 - Delegates to the Period Calculator to determine current state
@@ -83,7 +83,7 @@ LightsOut runs two reconcilers in the same operator process.
 - Updates the schedule's status and conditions
 - Re-queues for the next transition time, or sooner if a batch limit was reached
 
-**`LightsOutNamespaceScheduleReconciler`** (`internal/controller/lightsoutnamespaceschedule_controller.go`) — the namespace-scoped reconciler. It follows the same reconciliation flow but always operates on exactly one namespace: the namespace the `LightsOutNamespaceSchedule` resource lives in. No namespace discovery step is needed.
+**`LightsOutNamespaceScheduleReconciler`** (`internal/controller/lightsoutnamespaceschedule_controller.go`) - the namespace-scoped reconciler. It follows the same reconciliation flow but always operates on exactly one namespace: the namespace the `LightsOutNamespaceSchedule` resource lives in. No namespace discovery step is needed.
 
 A finalizer (`lightsout.techsupport.mk/cleanup`) on both resource types ensures that when a schedule is deleted, all managed workloads are restored to their original state before the resource is removed.
 
@@ -100,9 +100,9 @@ It uses adaptive search windows based on cron frequency to efficiently find the 
 
 Resolves which namespaces are in scope (`internal/controller/namespace.go`). Used only by the cluster-scoped reconciler; the namespace-scoped reconciler always targets its own namespace implicitly. It supports three targeting mechanisms that can be combined:
 
-- **Label selectors** (`namespaceSelector`) — select namespaces by labels
-- **Explicit lists** (`namespaces`) — name specific namespaces
-- **Exclusions** (`excludeNamespaces`) — remove namespaces from the result
+- **Label selectors** (`namespaceSelector`) - select namespaces by labels
+- **Explicit lists** (`namespaces`) - name specific namespaces
+- **Exclusions** (`excludeNamespaces`) - remove namespaces from the result
 
 System namespaces (`kube-system`, `kube-public`, `kube-node-lease`) are always excluded automatically.
 
@@ -112,18 +112,18 @@ After discovery, the global reconciler calls `FilterNamespacesWithLocalSchedules
 
 Handles the actual scaling of Kubernetes workloads (`internal/controller/scaler.go`):
 
-- **Deployments and StatefulSets** — scales replicas to 0 on downscale; restores from the `original-replicas` annotation on upscale
-- **CronJobs** — suspends on downscale; unsuspends on upscale (only if LightsOut was the one that suspended it)
+- **Deployments and StatefulSets** - scales replicas to 0 on downscale; restores from the `original-replicas` annotation on upscale
+- **CronJobs** - suspends on downscale; unsuspends on upscale (only if LightsOut was the one that suspended it)
 
 Key design properties:
 
-- **Idempotent** — safe to retry. If a workload is already scaled down, it won't be touched again.
-- **Respects user intent** — if a user manually scales a workload while it's managed, LightsOut tracks this and won't overwrite user changes.
-- **Managed-by tracking** — each workload is annotated with the schedule name that manages it, preventing conflicts between schedules.
+- **Idempotent** - safe to retry. If a workload is already scaled down, it won't be touched again.
+- **Respects user intent** - if a user manually scales a workload while it's managed, LightsOut tracks this and won't overwrite user changes.
+- **Managed-by tracking** - each workload is annotated with the schedule name that manages it, preventing conflicts between schedules.
 
 ### Rate Limiting
 
-Prevents resource spikes during bulk scaling. When rate limiting is configured (`batchSize` and optional `delayBetweenBatches`), the reconciler uses a **non-blocking budget-based approach**: it processes up to `batchSize` actual scale operations per reconciliation cycle, then returns early and requeues itself after the configured delay. On the next reconcile, it re-lists workloads and continues — already-processed workloads are skipped cheaply via their annotations without consuming budget.
+Prevents resource spikes during bulk scaling. When rate limiting is configured (`batchSize` and optional `delayBetweenBatches`), the reconciler uses a **non-blocking budget-based approach**: it processes up to `batchSize` actual scale operations per reconciliation cycle, then returns early and requeues itself after the configured delay. On the next reconcile, it re-lists workloads and continues - already-processed workloads are skipped cheaply via their annotations without consuming budget.
 
 This design keeps the controller responsive during large-scale operations. Spec changes, suspension, deletion, and period transitions (e.g., an upscale time arriving mid-downscale) are all picked up on the next requeue rather than being blocked until all batches finish. The requeue delay is `min(delayBetweenBatches, timeUntilNextTransition)` to ensure period transitions are never missed.
 
@@ -143,7 +143,7 @@ Execution is ordered to prevent false alerts:
 - **Downscale**: label ArgoCD apps first, then scale workloads
 - **Upscale**: scale workloads first, then transition ArgoCD apps from `down` → `warming-up`, then remove all labels once pods are ready (or `warmupTimeout` elapses)
 
-ArgoCD errors are best-effort — they are logged and emitted as events but never block workload scaling.
+ArgoCD errors are best-effort - they are logged and emitted as events but never block workload scaling.
 
 See the [ArgoCD Integration Guide](argocd.md) for usage details.
 
@@ -153,13 +153,13 @@ See the [ArgoCD Integration Guide](argocd.md) for usage details.
 
 **`LightsOutSchedule`** is cluster-scoped. It is intended for platform teams managing cost policies across multiple namespaces. A single resource can target dozens of namespaces via label selectors.
 
-**`LightsOutNamespaceSchedule`** is namespace-scoped. It allows developers to define their own scaling schedules for their namespace without requiring cluster-level access. When a `LightsOutNamespaceSchedule` exists in a namespace, any `LightsOutSchedule` targeting that namespace will skip it — giving the namespace-scoped schedule full control.
+**`LightsOutNamespaceSchedule`** is namespace-scoped. It allows developers to define their own scaling schedules for their namespace without requiring cluster-level access. When a `LightsOutNamespaceSchedule` exists in a namespace, any `LightsOutSchedule` targeting that namespace will skip it - giving the namespace-scoped schedule full control.
 
 Both types share the same scheduling fields (cron expressions, timezone, workload types, rate limits, ArgoCD integration) via a common `LightsOutScheduleCore` struct. They can be independently enabled via `clusterSchedules.enabled` and `namespaceSchedules.enabled` in Helm values.
 
 #### Upgrade note
 
-The `LightsOutSchedule` reconciler checks for namespace schedules on every reconcile cycle, making one API call per target namespace. For most users this is invisible. If a global schedule targets a very large number of namespaces and reconcile latency matters, set `namespaceSchedules.enabled=false` to skip this check entirely — but this is an edge case, not a default concern.
+The `LightsOutSchedule` reconciler checks for namespace schedules on every reconcile cycle, making one API call per target namespace. For most users this is invisible. If a global schedule targets a very large number of namespaces and reconcile latency matters, set `namespaceSchedules.enabled=false` to skip this check entirely - but this is an edge case, not a default concern.
 
 ### Annotation-Based State
 
@@ -173,7 +173,7 @@ A finalizer on each `LightsOutSchedule` ensures that deleting a schedule restore
 
 Every scaling operation checks current state before acting. This means:
 
-- Partial failures during a reconciliation are safe — the next cycle picks up where it left off
+- Partial failures during a reconciliation are safe - the next cycle picks up where it left off
 - Multiple reconciliations in quick succession don't cause issues
 - The controller can be restarted at any time without data loss
 
@@ -190,9 +190,9 @@ ArgoCD integration uses Kubernetes unstructured objects instead of importing Arg
 
 LightsOut includes optional admission webhooks for validation and defaulting. Both schedule types have their own webhook pair.
 
-**Mutating webhooks** — set `timezone` to `UTC` if not specified.
+**Mutating webhooks** - set `timezone` to `UTC` if not specified.
 
-**Validating webhooks** — reject invalid schedules before they're persisted:
+**Validating webhooks** - reject invalid schedules before they're persisted:
 
 - Validate cron expressions for both `upscale` and `downscale`
 - Validate the timezone is a recognized IANA timezone
@@ -200,7 +200,7 @@ LightsOut includes optional admission webhooks for validation and defaulting. Bo
 - Validate ArgoCD namespace is a valid DNS label when provided
 - Warn (but do not reject) when a schedule may conflict with an existing one
 
-The `LightsOutSchedule` validator additionally requires at least one namespace selection method (`namespaceSelector` or `namespaces`). The `LightsOutNamespaceSchedule` validator omits this check — the owning namespace is always implicit — and instead warns if a global `LightsOutSchedule` already targets the same namespace (explicit or via label selector).
+The `LightsOutSchedule` validator additionally requires at least one namespace selection method (`namespaceSelector` or `namespaces`). The `LightsOutNamespaceSchedule` validator omits this check - the owning namespace is always implicit - and instead warns if a global `LightsOutSchedule` already targets the same namespace (explicit or via label selector).
 
 ## Metrics
 

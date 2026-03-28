@@ -67,6 +67,17 @@ rules:
       - patch
       - update
   {{- end }}
+  # HorizontalPodAutoscalers
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+      - patch
   # CronJobs
   - apiGroups:
       - batch
@@ -78,9 +89,17 @@ rules:
       - watch
       - patch
       - update
-  # Events
+  # Events (core API group, legacy)
   - apiGroups:
       - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  # Events (events.k8s.io API group, used by controller-runtime's event broadcaster)
+  - apiGroups:
+      - events.k8s.io
     resources:
       - events
     verbs:

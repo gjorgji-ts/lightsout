@@ -7,7 +7,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -97,7 +99,7 @@ func TestScaleDeployment_Downscale(t *testing.T) {
 				WithObjects(tt.deployment).
 				Build()
 
-			result, err := ScaleDeployment(context.Background(), fakeClient, tt.deployment, tt.scheduleName, false)
+			result, err := ScaleDeployment(context.Background(), fakeClient, tt.deployment, tt.scheduleName, false, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -209,7 +211,7 @@ func TestScaleStatefulSet_Downscale(t *testing.T) {
 				WithObjects(tt.statefulset).
 				Build()
 
-			result, err := ScaleStatefulSet(context.Background(), fakeClient, tt.statefulset, tt.scheduleName, false)
+			result, err := ScaleStatefulSet(context.Background(), fakeClient, tt.statefulset, tt.scheduleName, false, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -330,7 +332,7 @@ func TestScaleStatefulSet_Upscale(t *testing.T) {
 				WithObjects(tt.statefulset).
 				Build()
 
-			result, err := ScaleStatefulSet(context.Background(), fakeClient, tt.statefulset, tt.scheduleName, true)
+			result, err := ScaleStatefulSet(context.Background(), fakeClient, tt.statefulset, tt.scheduleName, true, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -448,7 +450,7 @@ func TestScaleDeployment_Upscale(t *testing.T) {
 				WithObjects(tt.deployment).
 				Build()
 
-			result, err := ScaleDeployment(context.Background(), fakeClient, tt.deployment, tt.scheduleName, true)
+			result, err := ScaleDeployment(context.Background(), fakeClient, tt.deployment, tt.scheduleName, true, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -667,5 +669,236 @@ func TestScaleCronJob_Upscale(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestScaleDeploymentDown_WithHPA(t *testing.T) {
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-deploy", Namespace: "ns"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+	hpa := makeHPA("Deployment", "my-deploy", minReplicasPtr(2), nil)
+
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	addHPATypes(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).WithRuntimeObjects(hpa).Build()
+
+	hpaList := mustListHPAs(t, fakeClient)
+	result, err := ScaleDeployment(context.Background(), fakeClient, deploy, "my-schedule", false, hpaList)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Skipped {
+		t.Fatal("expected deployment to be scaled, not skipped")
+	}
+
+	updated := &appsv1.Deployment{}
+	_ = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "my-deploy"}, updated)
+	if updated.Spec.Replicas == nil || *updated.Spec.Replicas != 0 {
+		t.Errorf("expected replicas=0 after downscale")
+	}
+
+	updatedHPA := &unstructured.Unstructured{}
+	updatedHPA.SetGroupVersionKind(schema.GroupVersionKind{Group: "autoscaling", Version: "v2", Kind: "HorizontalPodAutoscaler"})
+	_ = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "my-hpa"}, updatedHPA)
+	// minReplicas should be unchanged (we disable scaleUp instead)
+	minR, _, _ := unstructured.NestedInt64(updatedHPA.Object, "spec", "minReplicas")
+	if minR != 2 {
+		t.Errorf("expected HPA minReplicas unchanged at 2 after downscale, got %d", minR)
+	}
+	policy, _, _ := unstructured.NestedString(updatedHPA.Object, "spec", "behavior", "scaleUp", "selectPolicy")
+	if policy != hpaScaleUpDisabled {
+		t.Errorf("expected scaleUp.selectPolicy=Disabled after downscale, got %q", policy)
+	}
+	if updatedHPA.GetAnnotations()[constants.ManagedByAnnotation] != "my-schedule" {
+		t.Errorf("expected managed-by annotation set to my-schedule")
+	}
+}
+
+func TestScaleDeploymentUp_WithHPA(t *testing.T) {
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-deploy",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "3",
+				constants.ManagedByAnnotation:        "my-schedule",
+			},
+			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+	// HPA in post-downscale state: scaleUp disabled, minReplicas unchanged at 2
+	hpa := makeHPA("Deployment", "my-deploy", minReplicasPtr(2), map[string]string{
+		constants.ManagedByAnnotation:                "my-schedule",
+		constants.OriginalHPAScaleUpPolicyAnnotation: "",
+	})
+	_ = unstructured.SetNestedField(hpa.Object, hpaScaleUpDisabled, "spec", "behavior", "scaleUp", "selectPolicy")
+
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	addHPATypes(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).WithRuntimeObjects(hpa).Build()
+
+	hpaList := mustListHPAs(t, fakeClient)
+	result, err := ScaleDeployment(context.Background(), fakeClient, deploy, "my-schedule", true, hpaList)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Skipped {
+		t.Fatal("expected deployment to be scaled up, not skipped")
+	}
+
+	updated := &appsv1.Deployment{}
+	_ = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "my-deploy"}, updated)
+	if updated.Spec.Replicas == nil || *updated.Spec.Replicas != 3 {
+		t.Errorf("expected replicas=3 after upscale, got %v", updated.Spec.Replicas)
+	}
+
+	updatedHPA := &unstructured.Unstructured{}
+	updatedHPA.SetGroupVersionKind(schema.GroupVersionKind{Group: "autoscaling", Version: "v2", Kind: "HorizontalPodAutoscaler"})
+	_ = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "my-hpa"}, updatedHPA)
+	// selectPolicy should be restored (removed)
+	policy, found, _ := unstructured.NestedString(updatedHPA.Object, "spec", "behavior", "scaleUp", "selectPolicy")
+	if found && policy != "" {
+		t.Errorf("expected scaleUp.selectPolicy removed after upscale, got %q", policy)
+	}
+	if updatedHPA.GetAnnotations()[constants.ManagedByAnnotation] != "" {
+		t.Error("expected managed-by annotation removed after upscale")
+	}
+	if updatedHPA.GetAnnotations()[constants.OriginalHPAScaleUpPolicyAnnotation] != "" {
+		t.Error("expected original-hpa-scale-up-policy annotation removed after upscale")
+	}
+}
+
+func TestScaleStatefulSetDown_WithHPA(t *testing.T) {
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-sts", Namespace: "ns"},
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(2))},
+	}
+	hpa := makeHPA("StatefulSet", "my-sts", minReplicasPtr(2), nil)
+
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	addHPATypes(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).WithRuntimeObjects(hpa).Build()
+
+	hpaList := mustListHPAs(t, fakeClient)
+	result, err := ScaleStatefulSet(context.Background(), fakeClient, sts, "my-schedule", false, hpaList)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Skipped {
+		t.Fatal("expected statefulset to be scaled, not skipped")
+	}
+
+	updatedHPA := &unstructured.Unstructured{}
+	updatedHPA.SetGroupVersionKind(schema.GroupVersionKind{Group: "autoscaling", Version: "v2", Kind: "HorizontalPodAutoscaler"})
+	_ = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "my-hpa"}, updatedHPA)
+	// minReplicas should be unchanged (we disable scaleUp instead)
+	minR, _, _ := unstructured.NestedInt64(updatedHPA.Object, "spec", "minReplicas")
+	if minR != 2 {
+		t.Errorf("expected HPA minReplicas unchanged at 2 after statefulset downscale, got %d", minR)
+	}
+	policy, _, _ := unstructured.NestedString(updatedHPA.Object, "spec", "behavior", "scaleUp", "selectPolicy")
+	if policy != hpaScaleUpDisabled {
+		t.Errorf("expected scaleUp.selectPolicy=Disabled after statefulset downscale, got %q", policy)
+	}
+}
+
+func TestScaleStatefulSetUp_WithHPA(t *testing.T) {
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-sts",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "2",
+				constants.ManagedByAnnotation:        "my-schedule",
+			},
+			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
+		},
+		Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+	}
+	// HPA in post-downscale state: scaleUp disabled, minReplicas unchanged at 2
+	hpa := makeHPA("StatefulSet", "my-sts", minReplicasPtr(2), map[string]string{
+		constants.ManagedByAnnotation:                "my-schedule",
+		constants.OriginalHPAScaleUpPolicyAnnotation: "",
+	})
+	_ = unstructured.SetNestedField(hpa.Object, hpaScaleUpDisabled, "spec", "behavior", "scaleUp", "selectPolicy")
+
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	addHPATypes(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sts).WithRuntimeObjects(hpa).Build()
+
+	hpaList := mustListHPAs(t, fakeClient)
+	result, err := ScaleStatefulSet(context.Background(), fakeClient, sts, "my-schedule", true, hpaList)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Skipped {
+		t.Fatal("expected statefulset to be scaled up, not skipped")
+	}
+
+	updatedHPA := &unstructured.Unstructured{}
+	updatedHPA.SetGroupVersionKind(schema.GroupVersionKind{Group: "autoscaling", Version: "v2", Kind: "HorizontalPodAutoscaler"})
+	_ = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "my-hpa"}, updatedHPA)
+	// selectPolicy should be restored (removed) after upscale
+	policy, found, _ := unstructured.NestedString(updatedHPA.Object, "spec", "behavior", "scaleUp", "selectPolicy")
+	if found && policy != "" {
+		t.Errorf("expected scaleUp.selectPolicy removed after statefulset upscale, got %q", policy)
+	}
+	if updatedHPA.GetAnnotations()[constants.ManagedByAnnotation] != "" {
+		t.Error("expected managed-by annotation removed after statefulset upscale")
+	}
+}
+
+// TestScaleDeploymentUp_HPACrashWindowRecovery verifies that if the controller crashed after
+// restoring the workload but before RestoreHPA ran, a subsequent reconcile cleans up the HPA.
+// In this state the deployment has no original-replicas annotation (already restored) but the
+// HPA still has managed-by + original-hpa-scale-up-policy annotations and scaleUp=Disabled.
+func TestScaleDeploymentUp_HPACrashWindowRecovery(t *testing.T) {
+	// Simulate post-crash state: workload already restored (no lightsout annotations),
+	// but HPA still has dangling annotations from the interrupted upscale.
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-deploy", Namespace: "ns"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+	hpa := makeHPA("Deployment", "my-deploy", minReplicasPtr(2), map[string]string{
+		constants.ManagedByAnnotation:                "my-schedule",
+		constants.OriginalHPAScaleUpPolicyAnnotation: "",
+	})
+	_ = unstructured.SetNestedField(hpa.Object, hpaScaleUpDisabled, "spec", "behavior", "scaleUp", "selectPolicy")
+
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	addHPATypes(scheme)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).WithRuntimeObjects(hpa).Build()
+
+	// ScaleDeployment with scaleUp=true - no original-replicas annotation, so workload is
+	// skipped, but the HPA recovery path should still restore the selectPolicy.
+	hpaList := mustListHPAs(t, fakeClient)
+	result, err := ScaleDeployment(context.Background(), fakeClient, deploy, "my-schedule", true, hpaList)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Skipped {
+		t.Fatal("expected deployment to be skipped (already restored)")
+	}
+
+	updatedHPA := &unstructured.Unstructured{}
+	updatedHPA.SetGroupVersionKind(schema.GroupVersionKind{Group: "autoscaling", Version: "v2", Kind: "HorizontalPodAutoscaler"})
+	_ = fakeClient.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "my-hpa"}, updatedHPA)
+
+	policy, found, _ := unstructured.NestedString(updatedHPA.Object, "spec", "behavior", "scaleUp", "selectPolicy")
+	if found && policy != "" {
+		t.Errorf("expected scaleUp.selectPolicy restored (removed) during crash recovery, got %q", policy)
+	}
+	if updatedHPA.GetAnnotations()[constants.ManagedByAnnotation] != "" {
+		t.Error("expected managed-by annotation removed from HPA after crash recovery")
+	}
+	if updatedHPA.GetAnnotations()[constants.OriginalHPAScaleUpPolicyAnnotation] != "" {
+		t.Error("expected original-hpa-scale-up-policy annotation removed from HPA after crash recovery")
 	}
 }
