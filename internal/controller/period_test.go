@@ -70,11 +70,23 @@ func TestCalculatePeriod(t *testing.T) {
 			wantState: "Up",
 		},
 		{
+			// Regression: yearly crons ("0 0 1 1 *" = Jan 1) were incorrectly
+			// classified as frequencyMonthly (90-day window). When now is > 90 days
+			// past Jan 1 (e.g. April), the window missed the last occurrence and the
+			// sentinel "never triggered" value caused the wrong state to be returned.
+			name:      "yearly crons more than 90 days past last downscale",
+			upscale:   "0 0 31 12 *",
+			downscale: "0 0 1 1 *",
+			timezone:  testTimezoneUTC,
+			now:       time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC), // 93 days past Jan 1
+			wantState: "Down",
+		},
+		{
 			name:      "invalid upscale cron",
 			upscale:   "invalid",
 			downscale: "0 18 * * *",
 			timezone:  testTimezoneUTC,
-			now:       time.Now(),
+			now:       time.Date(2026, 1, 13, 12, 0, 0, 0, time.UTC),
 			wantErr:   true,
 		},
 		{
@@ -82,7 +94,7 @@ func TestCalculatePeriod(t *testing.T) {
 			upscale:   "0 6 * * *",
 			downscale: "invalid",
 			timezone:  testTimezoneUTC,
-			now:       time.Now(),
+			now:       time.Date(2026, 1, 13, 12, 0, 0, 0, time.UTC),
 			wantErr:   true,
 		},
 		{
@@ -90,7 +102,7 @@ func TestCalculatePeriod(t *testing.T) {
 			upscale:   "0 6 * * *",
 			downscale: "0 18 * * *",
 			timezone:  "Invalid/Timezone",
-			now:       time.Now(),
+			now:       time.Date(2026, 1, 13, 12, 0, 0, 0, time.UTC),
 			wantErr:   true,
 		},
 	}
