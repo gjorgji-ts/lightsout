@@ -348,6 +348,15 @@ func handleFluxCDWarmup(
 
 	for i := range resources {
 		obj := &resources[i]
+
+		// Only process resources owned by this schedule.
+		// DiscoverFluxResources returns all matching resources regardless of ownership,
+		// so we must guard here to avoid tagging resources managed by another schedule
+		// or never managed by LightsOut at all.
+		if obj.GetLabels()[constants.ManagedByLabel] != scheduleName {
+			continue
+		}
+
 		state := obj.GetLabels()[constants.StateLabel]
 
 		switch state {

@@ -608,6 +608,66 @@ func TestHandleFluxCDWarmup_CompletesOnTimeout(t *testing.T) {
 	}
 }
 
+func TestHandleFluxCDWarmup_DoesNotTagUnmanagedResource(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
+
+	// Resource in the target namespace with no LightsOut labels, never managed by us.
+	// Before the fix, the default switch case would call TransitionFluxResourceToWarmingUp
+	// on this resource, stamping it with managed-by and state=warming-up.
+	ks := newFluxKustomization("ks-unmanaged", "flux-system", "dev", nil, false)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ks).Build()
+	cfg := &lightsoutv1alpha1.FluxCDConfig{Namespace: "flux-system"}
+
+	handleFluxCDWarmup(context.Background(), fakeClient, nil, nil, cfg, "dev-schedule", []string{"dev"}, now)
+
+	var updated unstructured.Unstructured
+	updated.SetGroupVersionKind(ks.GroupVersionKind())
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(ks), &updated); err != nil {
+		t.Fatalf("failed to get resource: %v", err)
+	}
+	labels := updated.GetLabels()
+	if labels[constants.ManagedByLabel] != "" {
+		t.Errorf("unmanaged resource should not get managed-by label, got %q", labels[constants.ManagedByLabel])
+	}
+	if labels[constants.StateLabel] != "" {
+		t.Errorf("unmanaged resource should not get state label, got %q", labels[constants.StateLabel])
+	}
+}
+
+func TestHandleFluxCDWarmup_DoesNotTagUserSuspendedResource(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
+
+	// Resource pre-suspended by the user (no managed-by label, suspend=true).
+	// SuspendFluxResource correctly skips these during downscale.
+	// handleFluxCDWarmup must also leave them alone during upscale.
+	ks := newFluxKustomization("ks-user-suspended", "flux-system", "dev", nil, true)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ks).Build()
+	cfg := &lightsoutv1alpha1.FluxCDConfig{Namespace: "flux-system"}
+
+	handleFluxCDWarmup(context.Background(), fakeClient, nil, nil, cfg, "dev-schedule", []string{"dev"}, now)
+
+	var updated unstructured.Unstructured
+	updated.SetGroupVersionKind(ks.GroupVersionKind())
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(ks), &updated); err != nil {
+		t.Fatalf("failed to get resource: %v", err)
+	}
+	labels := updated.GetLabels()
+	if labels[constants.ManagedByLabel] != "" {
+		t.Errorf("user-suspended resource should not get managed-by label, got %q", labels[constants.ManagedByLabel])
+	}
+	// spec.suspend must not be touched, the user suspended this intentionally
+	suspended, _, _ := unstructured.NestedBool(updated.Object, "spec", "suspend")
+	if !suspended {
+		t.Errorf("user-suspended resource spec.suspend should remain true")
+	}
+}
+
 func TestHandleFluxCDWarmup_CoLocatedUsesOwnNamespace(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
