@@ -22,7 +22,7 @@ LightsOut, in conjunction with a node autoscaler like [Karpenter](https://karpen
 When business hours resume, LightsOut restores workloads to their original replica counts, and your autoscaler provisions nodes to meet the increased demand.
 
 > [!NOTE]
-> LightsOut manages the workload layer, while your node autoscaler handles the infrastructure layer.  Together, they eliminate idle compute costs.
+> LightsOut manages the workload layer, while your node autoscaler handles the infrastructure layer. Together, they eliminate idle compute costs.
 
 ## Features
 
@@ -34,6 +34,7 @@ When business hours resume, LightsOut restores workloads to their original repli
 - **Rate-limited scaling** - batch workloads to avoid resource spikes
 - **Admission webhooks** - validates schedules and detects overlaps before they're applied
 - **ArgoCD integration** - optional labeling of ArgoCD Application CRDs to prevent false alerts during downscale
+- **FluxCD integration** - optional suspension of FluxCD Kustomization and HelmRelease resources to prevent drift detection and alert noise during downscale
 - **Prometheus metrics** - observe schedule state, scaling operations, errors, and durations
 
 ## Quick Start
@@ -106,6 +107,7 @@ Managed by platform teams. Targets workloads across one or more namespaces.
 | `upscaleRateLimit` | RateLimitConfig | No | Rate limit upscale operations |
 | `downscaleRateLimit` | RateLimitConfig | No | Rate limit downscale operations |
 | `argoCD` | ArgoCDConfig | No | Enable [ArgoCD integration](docs/argocd.md) |
+| `fluxCD` | FluxCDConfig | No | Enable [FluxCD integration](docs/fluxcd.md) |
 
 At least one of `namespaceSelector` or `namespaces` must be specified.
 
@@ -163,6 +165,20 @@ spec:
 
 LightsOut labels ArgoCD Application CRDs with `lightsout.techsupport.mk/state: down` during downscale and removes the labels on upscale. See the [ArgoCD Integration Guide](docs/argocd.md) for details.
 
+### FluxCD Integration
+
+If you use FluxCD, enabling the `fluxCD` field suspends matching Kustomization and HelmRelease resources during downscale, preventing FluxCD from reconciling workloads back to their Git-defined state while they are intentionally scaled to zero:
+
+```yaml
+spec:
+  fluxCD:
+    namespace: flux-system    # optional, defaults to "flux-system"
+```
+
+LightsOut sets `spec.suspend: true` on matching Flux resources during downscale and resumes them (with a warming-up grace period) on upscale. See the [FluxCD Integration Guide](docs/fluxcd.md) for details.
+
+> **Note:** You must opt in to the required RBAC by setting `rbac.fluxcd: true` in your Helm values.
+
 ## Observability
 
 LightsOut exposes Prometheus metrics on the metrics endpoint:
@@ -197,6 +213,7 @@ This approach also works with [Cluster Autoscaler](https://github.com/kubernetes
 - [Architecture](docs/architecture.md) - how LightsOut works internally
 - [HPA Integration](docs/hpa.md) - automatic HorizontalPodAutoscaler handling
 - [ArgoCD Integration](docs/argocd.md) - prevent false alerts when scaling down
+- [FluxCD Integration](docs/fluxcd.md) - prevent drift detection when scaling down
 - [Setup Guide](docs/setup-guide.md) - installation with and without webhooks
 - [Security Model](docs/security-model.md) - RBAC, risks, and mitigations
 - [Examples](examples/) - sample schedule configurations

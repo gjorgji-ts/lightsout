@@ -67,6 +67,30 @@ rules:
       - patch
       - update
   {{- end }}
+  {{- if .Values.rbac.fluxcd }}
+  # FluxCD Kustomizations
+  - apiGroups:
+      - kustomize.toolkit.fluxcd.io
+    resources:
+      - kustomizations
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+      - update
+  # FluxCD HelmReleases
+  - apiGroups:
+      - helm.toolkit.fluxcd.io
+    resources:
+      - helmreleases
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+      - update
+  {{- end }}
   # HorizontalPodAutoscalers
   - apiGroups:
       - autoscaling

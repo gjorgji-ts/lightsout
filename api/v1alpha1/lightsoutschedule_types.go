@@ -108,6 +108,25 @@ type ArgoCDConfig struct {
 	WarmupTimeout *metav1.Duration `json:"warmupTimeout,omitempty"`
 }
 
+// FluxCDConfig configures optional FluxCD Kustomization and HelmRelease suspension.
+// When present, lightsout suspends matching Flux resources during downscale to prevent
+// reconciliation from restoring scaled-down workloads.
+type FluxCDConfig struct {
+	// Namespace excluded from the co-located resource search. Resources in this
+	// namespace without spec.targetNamespace are skipped because they are system
+	// resources, not co-located workload deployments. Defaults to flux-system.
+	// +kubebuilder:default=flux-system
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
+	// WarmupTimeout is how long to keep Flux resources suspended after upscale
+	// before resuming them regardless of pod readiness.
+	// Defaults to 10 minutes.
+	// +kubebuilder:default="10m"
+	// +optional
+	WarmupTimeout *metav1.Duration `json:"warmupTimeout,omitempty"`
+}
+
 // LightsOutScheduleCore contains the shared scheduling fields used by both
 // LightsOutSchedule and LightsOutNamespaceSchedule.
 type LightsOutScheduleCore struct {
@@ -155,6 +174,12 @@ type LightsOutScheduleCore struct {
 	// integration is disabled.
 	// +optional
 	ArgoCD *ArgoCDConfig `json:"argoCD,omitempty"`
+
+	// FluxCD enables suspension of FluxCD Kustomization and HelmRelease resources
+	// during scaling operations to prevent reconciliation from fighting scale-down.
+	// When nil (omitted), FluxCD integration is disabled.
+	// +optional
+	FluxCD *FluxCDConfig `json:"fluxCD,omitempty"`
 }
 
 // LightsOutScheduleSpec defines the desired state of LightsOutSchedule

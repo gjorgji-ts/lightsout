@@ -156,6 +156,32 @@ kubectl get lightsoutnamespaceschedules -n team-a
 
 To allow developers to create these resources in their namespace, provision a `Role` and `RoleBinding` granting `create`, `update`, `delete` on `lightsoutnamespaceschedules` (API group `lightsout.techsupport.mk`). `get`, `list`, `watch` are typically granted to all namespace members for observability.
 
+## Optional Integrations
+
+### ArgoCD
+
+To grant LightsOut permissions to label ArgoCD Application CRDs (required for `spec.argoCD`):
+
+```bash
+helm upgrade lightsout oci://ghcr.io/gjorgji-ts/charts/lightsout \
+  --set rbac.argocd=true
+```
+
+See the [ArgoCD Integration Guide](argocd.md) for full configuration details.
+
+### FluxCD
+
+To grant LightsOut permissions to suspend FluxCD Kustomization and HelmRelease resources (required for `spec.fluxCD`):
+
+```bash
+helm upgrade lightsout oci://ghcr.io/gjorgji-ts/charts/lightsout \
+  --set rbac.fluxcd=true
+```
+
+See the [FluxCD Integration Guide](fluxcd.md) for full configuration details.
+
+## Disabling Namespace Schedules
+
 To disable the namespace schedule controller entirely, set `--set namespaceSchedules.enabled=false` during Helm install/upgrade. The CRD is still installed; only the controller registration and RBAC rules are skipped.
 
 ## Uninstall

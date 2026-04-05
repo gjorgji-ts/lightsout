@@ -40,7 +40,8 @@ const (
 	// FinalizerName is the finalizer used to ensure cleanup on schedule deletion
 	FinalizerName = AnnotationPrefix + "cleanup"
 
-	// StateLabel signals the downscale state on ArgoCD Application CRDs
+	// StateLabel signals the downscale state on managed integration resources
+	// (ArgoCD Application CRDs, FluxCD Kustomization and HelmRelease resources)
 	StateLabel = LabelPrefix + "state"
 
 	// StateDown is the value for StateLabel when the app is downscaled
@@ -55,6 +56,10 @@ const (
 
 	// DefaultArgoCDNamespace is the default namespace where ArgoCD Application CRDs live
 	DefaultArgoCDNamespace = "argocd"
+
+	// DefaultFluxCDNamespace is the default namespace where FluxCD Kustomization
+	// and HelmRelease resources live.
+	DefaultFluxCDNamespace = "flux-system"
 
 	// DefaultTimezone is the default IANA timezone used when none is specified on a schedule
 	DefaultTimezone = "UTC"

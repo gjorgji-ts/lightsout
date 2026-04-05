@@ -21,6 +21,9 @@ rbac:
   # -- Grant permissions to list/watch/patch ArgoCD Application resources.
   # -- Enable only if using the spec.argoCD integration.
   argocd: false
+  # -- Grant permissions to list/watch/patch FluxCD Kustomization and HelmRelease resources.
+  # -- Enable only if using the spec.fluxCD integration.
+  fluxcd: false
 
 resources:
   limits:

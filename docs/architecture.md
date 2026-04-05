@@ -51,9 +51,12 @@ flowchart TD
     NSR --> PC
     R --> AL["ArgoCD Labeler<br/>(optional)"]
     NSR --> AL
+    R --> FL["FluxCD Suspender<br/>(optional)"]
+    NSR --> FL
     R --> WS["Workload Scaler<br/>(budget-based rate limiting)"]
     NSR --> WS
     AL -->|"label/unlabel apps"| ArgoCD["ArgoCD Application CRDs"]
+    FL -->|"suspend/resume"| Flux["FluxCD Kustomizations<br/>& HelmReleases"]
     WS -->|"scale operations"| K8s["Kubernetes API<br/>(Deployments, StatefulSets, CronJobs)"]
     WS -->|"store/restore state"| Ann["Annotations<br/>original-replicas<br/>managed-by"]
     R -->|"emit"| Ev["Kubernetes Events"]
@@ -79,6 +82,7 @@ LightsOut runs two reconcilers in the same operator process.
 - Collects workloads (Deployments, StatefulSets, CronJobs) across the remaining namespaces
 - Filters out excluded workloads via `excludeLabels`
 - If ArgoCD integration is enabled, labels/unlabels ArgoCD Application CRDs (ordered relative to scaling)
+- If FluxCD integration is enabled, suspends/resumes FluxCD Kustomization and HelmRelease resources (ordered relative to scaling)
 - Delegates to the Workload Scaler for actual scaling (with budget-based rate limiting when configured)
 - Updates the schedule's status and conditions
 - Re-queues for the next transition time, or sooner if a batch limit was reached
@@ -147,6 +151,28 @@ ArgoCD errors are best-effort - they are logged and emitted as events but never 
 
 See the [ArgoCD Integration Guide](argocd.md) for usage details.
 
+### FluxCD Suspender
+
+Optional component that suspends FluxCD Kustomization and HelmRelease resources during scaling operations (`internal/controller/fluxcd.go`). When `spec.fluxCD` is set on a schedule, the suspender:
+
+- **Discovers** Flux resources using two strategies:
+  - Cluster-wide, matching by `spec.targetNamespace` to the schedule's target namespaces (covers multi-tenant setups where Flux resources live in any namespace)
+  - Per target namespace, matching resources with no `spec.targetNamespace` (co-located pattern, where the resource lives in the same namespace it deploys to)
+- **Suspends** matching resources by setting `spec.suspend: true`, and labels them with `lightsout.techsupport.mk/state: down` during downscale
+- **Transitions** suspended resources to `warming-up` state on upscale, keeping them suspended until workloads in the target namespace are ready
+- **Resumes** resources (sets `spec.suspend: false`) and removes all labels and annotations once workloads are healthy or `warmupTimeout` elapses
+
+This uses an unstructured client, so there is no compile-time dependency on FluxCD. If FluxCD CRDs are not installed on the cluster, discovery returns empty and scaling proceeds normally.
+
+Execution is ordered to prevent FluxCD from reconciling workloads back to their Git-defined state while LightsOut has intentionally scaled them to zero:
+
+- **Downscale**: suspend Flux resources first, then scale workloads
+- **Upscale**: scale workloads first, then transition Flux resources from `down` → `warming-up`, then resume them once pods are ready (or `warmupTimeout` elapses)
+
+FluxCD errors are best-effort, they are logged and emitted as events but never block workload scaling.
+
+See the [FluxCD Integration Guide](fluxcd.md) for usage details.
+
 ## Key Design Decisions
 
 ### Resource Scopes
@@ -155,7 +181,7 @@ See the [ArgoCD Integration Guide](argocd.md) for usage details.
 
 **`LightsOutNamespaceSchedule`** is namespace-scoped. It allows developers to define their own scaling schedules for their namespace without requiring cluster-level access. When a `LightsOutNamespaceSchedule` exists in a namespace, any `LightsOutSchedule` targeting that namespace will skip it - giving the namespace-scoped schedule full control.
 
-Both types share the same scheduling fields (cron expressions, timezone, workload types, rate limits, ArgoCD integration) via a common `LightsOutScheduleCore` struct. They can be independently enabled via `clusterSchedules.enabled` and `namespaceSchedules.enabled` in Helm values.
+Both types share the same scheduling fields (cron expressions, timezone, workload types, rate limits, ArgoCD integration, FluxCD integration) via a common `LightsOutScheduleCore` struct. They can be independently enabled via `clusterSchedules.enabled` and `namespaceSchedules.enabled` in Helm values.
 
 #### Upgrade note
 
@@ -177,14 +203,14 @@ Every scaling operation checks current state before acting. This means:
 - Multiple reconciliations in quick succession don't cause issues
 - The controller can be restarted at any time without data loss
 
-### Soft ArgoCD Dependency
+### Soft ArgoCD and FluxCD Dependencies
 
-ArgoCD integration uses Kubernetes unstructured objects instead of importing ArgoCD Go types. This means:
+Both integrations use Kubernetes unstructured objects instead of importing third-party Go types. This means:
 
-- The operator compiles without any `argoproj.io` dependency
-- It runs normally on clusters without ArgoCD installed
-- RBAC permissions for `argoproj.io/applications` are opt-in via `rbac.argocd: true` in Helm values and are omitted by default
-- The feature is entirely opt-in via the `spec.argoCD` field
+- The operator compiles without any `argoproj.io` or FluxCD dependency
+- It runs normally on clusters without ArgoCD or FluxCD installed, if the CRDs are absent, discovery returns empty and scaling proceeds
+- RBAC permissions are opt-in: `rbac.argocd: true` for ArgoCD, `rbac.fluxcd: true` for FluxCD; both are omitted by default
+- Each feature is independently opt-in via `spec.argoCD` and `spec.fluxCD` respectively
 
 ## Webhooks
 

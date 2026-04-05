@@ -147,6 +147,27 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+              fluxCD:
+                description: |-
+                  FluxCD enables suspension of FluxCD Kustomization and HelmRelease resources
+                  during scaling operations to prevent reconciliation from fighting scale-down.
+                  When nil (omitted), FluxCD integration is disabled.
+                properties:
+                  namespace:
+                    default: flux-system
+                    description: |-
+                      Namespace excluded from the co-located resource search. Resources in this
+                      namespace without spec.targetNamespace are skipped because they are system
+                      resources, not co-located workload deployments. Defaults to flux-system.
+                    type: string
+                  warmupTimeout:
+                    default: 10m
+                    description: |-
+                      WarmupTimeout is how long to keep Flux resources suspended after upscale
+                      before resuming them regardless of pod readiness.
+                      Defaults to 10 minutes.
+                    type: string
+                type: object
               suspend:
                 default: false
                 description: Suspend pauses all scaling operations when true
