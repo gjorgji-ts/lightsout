@@ -61,7 +61,72 @@ LightsOut searches two locations for matching Flux resources:
 
 Both `Kustomization` and `HelmRelease` are searched in both locations.
 
-> **Limitation:** Resources that target namespaces via `spec.patches`, cross-namespace chart references, or other non-standard mechanisms are not discovered automatically. These require manual management.
+> **Important - Kustomizations must set `spec.targetNamespace`:** A `Kustomization` in `flux-system` (or any namespace outside the target) is only discovered if it has `spec.targetNamespace` matching the schedule's target namespace. A Kustomization in `flux-system` without `spec.targetNamespace` is treated as a system resource and skipped, even if it deploys workloads into a target namespace. Without suspension, kustomize-controller will continue reconciling every `spec.interval` and fight back against LightsOut's scaled-down replicas.
+>
+> **What to do:** If your Kustomization deploys resources into a single namespace, set `spec.targetNamespace` on it. If a single Kustomization deploys to multiple namespaces (mixed-namespace resources), split it into one Kustomization per namespace, each with its own `spec.targetNamespace`. See the [example below](#kustomization-targetnamespace-pattern).
+>
+> **Other non-discoverable cases:** Resources that target namespaces via `spec.patches`, cross-namespace chart references, or other non-standard mechanisms are also not discovered automatically and require manual management.
+
+### Kustomization targetNamespace Pattern
+
+For LightsOut to discover and suspend a `Kustomization` living in `flux-system`, it must have `spec.targetNamespace` pointing at the workload namespace:
+
+```yaml
+# ✅ Discoverable - spec.targetNamespace tells lightsout which namespace this manages
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: my-app-backend
+  namespace: flux-system
+spec:
+  targetNamespace: team-backend   # lightsout matches this against its target namespaces
+  path: ./apps/my-app/backend
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+```
+
+```yaml
+# ❌ Not discoverable - flux-system Kustomization without targetNamespace is treated as a system resource and skipped. kustomize-controller will reconcile every spec.interval and restore replicas that lightsout has scaled to zero.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: my-app-backend
+  namespace: flux-system
+spec:
+  path: ./apps/my-app/backend     # deploys to team-backend, but lightsout can't know that
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+```
+
+If a single Kustomization deploys to multiple namespaces (e.g. it includes a `HelmRelease` in `flux-system` and `Deployment` resources in `team-backend`), setting `spec.targetNamespace` is not possible, it would override **all** resource namespaces. In this case, split into separate Kustomizations:
+
+```yaml
+# Base Kustomization: flux-system resources (HelmReleases with their own targetNamespace)
+# This one is discovered via the HelmRelease's own spec.targetNamespace, no change needed.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: my-app           # manages flux-system HelmReleases
+  namespace: flux-system
+spec:
+  path: ./apps/my-app/base
+  ...
+---
+# Per-namespace Kustomization: plain workloads for team-backend
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: my-app-backend   # manages team-backend Deployments/StatefulSets/etc.
+  namespace: flux-system
+spec:
+  targetNamespace: team-backend
+  path: ./apps/my-app/backend
+  dependsOn:
+    - name: my-app
+  ...
+```
 
 ### State Machine
 
