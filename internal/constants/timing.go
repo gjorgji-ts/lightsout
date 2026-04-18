@@ -4,7 +4,8 @@ import "time"
 
 const (
 	// WarmupCheckInterval is how often the controller re-checks pod readiness
-	// while an ArgoCD app is in the warming-up state
+	// while integration resources (ArgoCD apps, FluxCD Kustomizations/HelmReleases)
+	// are in the warming-up state
 	WarmupCheckInterval = 30 * time.Second
 
 	// DefaultWarmupTimeout is the fallback duration after which the warming-up

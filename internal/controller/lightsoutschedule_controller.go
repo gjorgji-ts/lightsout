@@ -63,6 +63,8 @@ type LightsOutScheduleReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=argoproj.io,resources=applications,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;list;watch;update;patch
 
 func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -154,11 +156,15 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		rateLimit = schedule.Spec.DownscaleRateLimit
 	}
 
-	// ArgoCD labeling is ordered relative to workload scaling to prevent false alerts:
-	// - Downscale: label ArgoCD apps first, then scale workloads
-	// - Upscale: scale workloads first, then remove ArgoCD labels
+	// ArgoCD and FluxCD labeling/suspension is ordered relative to workload scaling
+	// to prevent false alerts and reconciliation conflicts:
+	// - Downscale: label/suspend integrations first, then scale workloads
+	// - Upscale: scale workloads first, then remove ArgoCD labels / resume FluxCD
 	if !scaleUp && schedule.Spec.ArgoCD != nil {
 		labelArgoCDAppsDown(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.ArgoCD, schedule.Name, namespaces)
+	}
+	if !scaleUp && schedule.Spec.FluxCD != nil {
+		labelFluxResourcesDown(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.FluxCD, schedule.Name, namespaces)
 	}
 
 	scaleResult, err := r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit)
@@ -171,6 +177,10 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	stillWarmingUp := false
 	if scaleUp && schedule.Spec.ArgoCD != nil {
 		stillWarmingUp = handleArgoCDWarmup(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.ArgoCD, schedule.Name, namespaces, now)
+	}
+	if scaleUp && schedule.Spec.FluxCD != nil {
+		fluxWarmingUp := handleFluxCDWarmup(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.FluxCD, schedule.Name, namespaces, now)
+		stillWarmingUp = stillWarmingUp || fluxWarmingUp
 	}
 
 	stats := scaleResult.stats
@@ -358,6 +368,20 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 		}
 	}
 
+	// Cleanup FluxCD Kustomization and HelmRelease suspensions
+	if schedule.Spec.FluxCD != nil {
+		resources, err := DiscoverFluxResources(ctx, r.Client, schedule.Spec.FluxCD, namespaces)
+		if err != nil {
+			logger.Error(err, "failed to discover Flux resources during cleanup")
+		} else {
+			for i := range resources {
+				if _, err := ResumeFluxResource(ctx, r.Client, &resources[i], schedule.Name); err != nil {
+					logger.Error(err, "failed to resume Flux resource during cleanup", "resource", resources[i].GetName())
+				}
+			}
+		}
+	}
+
 	// Record events based on cleanup result
 	if len(restoreErrors) > 0 {
 		logger.Error(nil, "failed to restore some workloads during cleanup",
@@ -408,7 +432,7 @@ func calculateRequeueAfter(period *PeriodResult, scaleUp bool, scaleResult *scal
 		return max(requeueAfter, time.Second)
 	}
 	if stillWarmingUp {
-		// ArgoCD apps are warming up - poll readiness at WarmupCheckInterval,
+		// ArgoCD or FluxCD resources are warming up poll readiness at WarmupCheckInterval,
 		// but no later than the next period transition.
 		return max(min(constants.WarmupCheckInterval, timeUntilNext), time.Second)
 	}

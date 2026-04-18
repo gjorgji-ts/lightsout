@@ -45,6 +45,8 @@ import (
 	"github.com/gjorgji-ts/lightsout/internal/constants"
 )
 
+const devScheduleName = "dev-schedule"
+
 func TestReconcile_WithRateLimiting(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -3685,5 +3687,222 @@ func TestReconcile_SkipsNamespacesWithLocalSchedules(t *testing.T) {
 	}
 	if d.Spec.Replicas == nil || *d.Spec.Replicas == 0 {
 		t.Error("global schedule should skip team-a because it has a LightsOutNamespaceSchedule")
+	}
+}
+
+func TestReconcile_FluxCDDownscale(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+
+	// Kustomization in flux-system targeting "dev" should be suspended
+	ks := newFluxKustomization("ks-dev", "flux-system", "dev", nil, false)
+	// Kustomization targeting an unrelated namespace should NOT be suspended
+	ksOther := newFluxKustomization("ks-prod", "flux-system", "prod", nil, false)
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: devScheduleName},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 7 * * *",
+				Downscale: "0 19 * * *",
+				FluxCD:    &lightsoutv1alpha1.FluxCDConfig{Namespace: "flux-system"},
+			},
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, ks, ksOther, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			// 8 PM = downscale period (after 7 PM downscale cron)
+			return time.Date(2025, 1, 15, 20, 0, 0, 0, time.UTC)
+		},
+	}
+
+	// First reconcile adds finalizer
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: devScheduleName},
+	})
+	if err != nil {
+		t.Fatalf("first reconcile failed: %v", err)
+	}
+	// Second reconcile does the actual scaling + FluxCD suspension
+	_, err = r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: devScheduleName},
+	})
+	if err != nil {
+		t.Fatalf("second reconcile failed: %v", err)
+	}
+
+	// Deployment should be scaled to zero
+	var updatedDeploy appsv1.Deployment
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(deploy), &updatedDeploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	if *updatedDeploy.Spec.Replicas != 0 {
+		t.Errorf("deployment replicas = %d, want 0", *updatedDeploy.Spec.Replicas)
+	}
+
+	// Kustomization targeting "dev" should be suspended with state=down
+	var updatedKs unstructured.Unstructured
+	updatedKs.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(ks), &updatedKs); err != nil {
+		t.Fatalf("failed to get Kustomization: %v", err)
+	}
+	ksLabels := updatedKs.GetLabels()
+	if ksLabels[constants.StateLabel] != constants.StateDown {
+		t.Errorf("Kustomization state label = %q, want %q", ksLabels[constants.StateLabel], constants.StateDown)
+	}
+	if ksLabels[constants.ManagedByLabel] != devScheduleName {
+		t.Errorf("Kustomization managed-by label = %q, want %q", ksLabels[constants.ManagedByLabel], devScheduleName)
+	}
+	ksSuspended, _, _ := unstructured.NestedBool(updatedKs.Object, "spec", "suspend")
+	if !ksSuspended {
+		t.Errorf("Kustomization spec.suspend = false, want true")
+	}
+
+	// Kustomization targeting "prod" should be untouched
+	var updatedKsOther unstructured.Unstructured
+	updatedKsOther.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(ksOther), &updatedKsOther); err != nil {
+		t.Fatalf("failed to get prod Kustomization: %v", err)
+	}
+	if _, exists := updatedKsOther.GetLabels()[constants.StateLabel]; exists {
+		t.Errorf("prod Kustomization should not have state label")
+	}
+}
+
+func TestReconcile_FluxCDUpscale(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	// Deployment already scaled down by a previous downscale
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web",
+			Namespace: "dev",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "3",
+				constants.ManagedByAnnotation:        devScheduleName,
+			},
+			Labels: map[string]string{
+				constants.ManagedByLabel: devScheduleName,
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+
+	// Kustomization already suspended with state=down
+	ks := newFluxKustomization("ks-dev", "flux-system", "dev", map[string]string{
+		constants.StateLabel:     constants.StateDown,
+		constants.ManagedByLabel: devScheduleName,
+	}, true)
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: devScheduleName},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 7 * * *",
+				Downscale: "0 19 * * *",
+				FluxCD:    &lightsoutv1alpha1.FluxCDConfig{Namespace: "flux-system"},
+			},
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, deploy, ks, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			// 10 AM = upscale period (after 7 AM upscale, before 7 PM downscale)
+			return time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
+		},
+	}
+
+	// First reconcile adds finalizer
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: devScheduleName},
+	})
+	// Second reconcile scales up and transitions Flux resource to warming-up
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: devScheduleName},
+	})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	// Deployment should be restored to original replica count
+	var updatedDeploy appsv1.Deployment
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(deploy), &updatedDeploy); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+	if *updatedDeploy.Spec.Replicas != 3 {
+		t.Errorf("deployment replicas = %d, want 3", *updatedDeploy.Spec.Replicas)
+	}
+
+	// Kustomization should have transitioned to warming-up (still suspended, pods not yet ready)
+	var updatedKs unstructured.Unstructured
+	updatedKs.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(ks), &updatedKs); err != nil {
+		t.Fatalf("failed to get Kustomization: %v", err)
+	}
+	ksLabels := updatedKs.GetLabels()
+	if ksLabels[constants.StateLabel] != constants.StateWarmingUp {
+		t.Errorf("Kustomization state label = %q, want %q", ksLabels[constants.StateLabel], constants.StateWarmingUp)
+	}
+	if ksLabels[constants.ManagedByLabel] != devScheduleName {
+		t.Errorf("Kustomization managed-by label = %q, want %q", ksLabels[constants.ManagedByLabel], devScheduleName)
+	}
+	ksSuspended, _, _ := unstructured.NestedBool(updatedKs.Object, "spec", "suspend")
+	if !ksSuspended {
+		t.Errorf("Kustomization spec.suspend = false, want true (still warming up)")
+	}
+	if _, exists := updatedKs.GetAnnotations()[constants.WarmingUpSinceAnnotation]; !exists {
+		t.Errorf("Kustomization should have warming-up-since annotation")
 	}
 }

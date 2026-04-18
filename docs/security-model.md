@@ -16,7 +16,9 @@ The LightsOut controller requires **cluster-wide permissions** to modify workloa
 | Events | core, events.k8s.io | create, patch | Record scaling events for observability (controller-runtime uses the `events.k8s.io` API group on modern clusters) |
 | LightsOutSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage cluster-scoped schedules |
 | LightsOutNamespaceSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage namespace-scoped schedules; global controller lists these to implement precedence |
-| Applications | argoproj.io | get, list, watch, update, patch | Label ArgoCD Application CRDs during scaling (optional) |
+| Applications | argoproj.io | get, list, watch, update, patch | Label ArgoCD Application CRDs during scaling (optional, requires `rbac.argocd: true`) |
+| Kustomizations | kustomize.toolkit.fluxcd.io | get, list, watch, update, patch | Suspend/resume FluxCD Kustomization resources during scaling (optional, requires `rbac.fluxcd: true`) |
+| HelmReleases | helm.toolkit.fluxcd.io | get, list, watch, update, patch | Suspend/resume FluxCD HelmRelease resources during scaling (optional, requires `rbac.fluxcd: true`) |
 
 #### Why Cluster-Wide Access?
 
@@ -37,6 +39,7 @@ The operator's `ClusterRole` covers what the controller itself needs. For develo
 **Risks:**
 - The controller has write access to all Deployments, StatefulSets, and CronJobs cluster-wide
 - When ArgoCD integration is enabled, the controller can modify labels on ArgoCD Application CRDs
+- When FluxCD integration is enabled, the controller can set `spec.suspend` on FluxCD Kustomization and HelmRelease resources cluster-wide
 - A misconfigured schedule could inadvertently scale down production workloads
 - Compromised controller credentials could be used to disrupt services
 

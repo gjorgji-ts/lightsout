@@ -130,12 +130,11 @@ func analyzeScheduleFrequency(cronExpr string) scheduleFrequency {
 
 	// Monthly: specific day of month, or specific month
 	if dom != "*" || month != "*" {
-		// Check for rare patterns like Feb 29
+		// A single specific month means the cron fires at most once per year.
+		// Use the 400-day window so the previous occurrence is always found,
+		// regardless of which day of the month is specified.
 		if month != "*" && !strings.Contains(month, ",") && !strings.Contains(month, "-") {
-			// Single specific month
-			if dom == "29" || dom == "30" || dom == "31" {
-				return frequencyRare // Edge case: might not occur in all months
-			}
+			return frequencyRare
 		}
 		return frequencyMonthly
 	}
