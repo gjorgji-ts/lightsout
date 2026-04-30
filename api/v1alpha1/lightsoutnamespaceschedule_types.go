@@ -96,7 +96,3 @@ type LightsOutNamespaceScheduleList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []LightsOutNamespaceSchedule `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&LightsOutNamespaceSchedule{}, &LightsOutNamespaceScheduleList{})
-}
