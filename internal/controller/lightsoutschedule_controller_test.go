@@ -135,6 +135,84 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 	}
 }
 
+// TestReconcile_ReleasesOrphanedNamespace reproduces the bug where a workload keeps a
+// schedule's managed-by annotation/label forever after its namespace is removed from
+// spec.namespaces. After reconcile the deployment must be restored to its original
+// replica count and stripped of lightsout ownership metadata.
+func TestReconcile_ReleasesOrphanedNamespace(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	// Deployment previously claimed by the schedule in a namespace that is no longer targeted.
+	orphan := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "myapp",
+			Namespace: "myapp",
+			Labels:    map[string]string{constants.ManagedByLabel: "hibernate"},
+			Annotations: map[string]string{
+				constants.ManagedByAnnotation:        "hibernate",
+				constants.OriginalReplicasAnnotation: "1",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "hibernate",
+			Finalizers: []string{constants.FinalizerName}, // skip the add-finalizer requeue
+		},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 7 * * *",
+				Downscale: "0 19 * * *",
+			},
+			Namespaces: []string{"other-ns"}, // "myapp" removed
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(orphan, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		TimeFunc: func() time.Time {
+			return time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC) // Up window
+		},
+	}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKey{Name: "hibernate"},
+	}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	var got appsv1.Deployment
+	if err := fakeClient.Get(context.Background(), client.ObjectKey{Name: "myapp", Namespace: "myapp"}, &got); err != nil {
+		t.Fatalf("failed to get deployment: %v", err)
+	}
+
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != 1 {
+		t.Errorf("expected orphaned deployment restored to 1 replica, got %v", got.Spec.Replicas)
+	}
+	if _, ok := got.Annotations[constants.ManagedByAnnotation]; ok {
+		t.Error("managed-by annotation should be stripped on release")
+	}
+	if _, ok := got.Annotations[constants.OriginalReplicasAnnotation]; ok {
+		t.Error("original-replicas annotation should be stripped on release")
+	}
+	if _, ok := got.Labels[constants.ManagedByLabel]; ok {
+		t.Error("managed-by label should be stripped on release")
+	}
+}
+
 func TestCollectWorkloads(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
