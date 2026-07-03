@@ -294,8 +294,6 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 	logger := log.FromContext(ctx)
 	logger.Info("handling deletion, restoring managed workloads")
 
-	var restoreErrors []string
-
 	// Discover all namespaces this schedule manages
 	namespaces, err := DiscoverNamespaces(ctx, r.Client, &schedule.Spec)
 	if err != nil {
@@ -312,7 +310,7 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 	}
 
 	// Restore every workload and integration resource this schedule owns.
-	restoreErrors = append(restoreErrors, r.restoreManagedWorkloads(ctx, schedule, namespaces)...)
+	restoreErrors := r.restoreManagedWorkloads(ctx, schedule, namespaces)
 
 	// Record events based on cleanup result
 	if len(restoreErrors) > 0 {
