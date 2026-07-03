@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -125,16 +127,21 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	ctx = log.IntoContext(ctx, logger)
 
 	// Discover target namespaces
-	namespaces, err := DiscoverNamespaces(ctx, r.Client, &schedule.Spec)
+	targetNamespaces, err := DiscoverNamespaces(ctx, r.Client, &schedule.Spec)
 	if err != nil {
 		logger.Error(err, "failed to discover namespaces")
 		r.setErrorCondition(ctx, &schedule, err)
 		return ctrl.Result{}, err
 	}
 
+	// Release any workloads this schedule still owns in namespaces that have dropped
+	// out of its target set (e.g. removed from spec.namespaces). Without this they keep
+	// the managed-by annotation/label forever, stranded scaled-down and unclaimable.
+	r.releaseOrphanedNamespaces(ctx, &schedule, targetNamespaces)
+
 	// Filter out namespaces that have a LightsOutNamespaceSchedule -
 	// namespace-scoped schedules take precedence over this global schedule.
-	namespaces, err = FilterNamespacesWithLocalSchedules(ctx, r.Client, namespaces)
+	namespaces, err := FilterNamespacesWithLocalSchedules(ctx, r.Client, targetNamespaces)
 	if err != nil {
 		logger.Error(err, "failed to filter namespaces with local schedules")
 		r.setErrorCondition(ctx, &schedule, err)
@@ -287,8 +294,6 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 	logger := log.FromContext(ctx)
 	logger.Info("handling deletion, restoring managed workloads")
 
-	var restoreErrors []string
-
 	// Discover all namespaces this schedule manages
 	namespaces, err := DiscoverNamespaces(ctx, r.Client, &schedule.Spec)
 	if err != nil {
@@ -304,11 +309,49 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 		return ctrl.Result{}, err
 	}
 
-	// Restore workloads in each namespace
+	// Restore every workload and integration resource this schedule owns.
+	restoreErrors := r.restoreManagedWorkloads(ctx, schedule, namespaces)
+
+	// Record events based on cleanup result
+	if len(restoreErrors) > 0 {
+		logger.Error(nil, "failed to restore some workloads during cleanup",
+			"schedule", schedule.Name,
+			"errors", restoreErrors)
+
+		if r.Recorder != nil {
+			r.Recorder.Eventf(schedule, nil, corev1.EventTypeWarning, "CleanupPartialFailure", "Cleanup",
+				"Failed to restore %d workload(s) during deletion: %s",
+				len(restoreErrors), strings.Join(restoreErrors, "; "))
+		}
+
+		// Don't remove finalizer if there were errors - this will trigger a retry
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	logger.Info("cleanup complete, all managed workloads restored")
+	if r.Recorder != nil {
+		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "CleanupComplete", "Cleanup",
+			"All managed workloads restored to original state")
+	}
+
+	// Remove finalizer to allow deletion
+	controllerutil.RemoveFinalizer(schedule, constants.FinalizerName)
+	return ctrl.Result{}, r.Update(ctx, schedule)
+}
+
+// restoreManagedWorkloads restores every workload and integration resource this schedule
+// currently owns in the given namespaces to its original, unowned state (replicas restored,
+// managed-by annotation/label and ArgoCD/Flux state labels stripped). Shared by finalizer
+// cleanup (handleDeletion) and orphan release (releaseOrphanedNamespaces). Returns a slice
+// of human-readable errors for resources that failed to restore.
+func (r *LightsOutScheduleReconciler) restoreManagedWorkloads(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, namespaces []string) []string {
+	logger := log.FromContext(ctx)
+	var restoreErrors []string
+
 	for _, ns := range namespaces {
 		hpaList, hpaErr := listHPAs(ctx, r.Client, ns)
 		if hpaErr != nil {
-			logger.Error(hpaErr, "failed to list HPAs during deletion, HPA restore skipped", "namespace", ns)
+			logger.Error(hpaErr, "failed to list HPAs during restore, HPA restore skipped", "namespace", ns)
 		}
 
 		deployments, err := listManagedDeployments(ctx, r.Client, ns, schedule.Name)
@@ -358,11 +401,11 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 	if schedule.Spec.ArgoCD != nil {
 		apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
 		if err != nil {
-			logger.Error(err, "failed to discover ArgoCD apps during cleanup")
+			logger.Error(err, "failed to discover ArgoCD apps during restore")
 		} else {
 			for i := range apps {
 				if _, err := RemoveArgoCDAppLabels(ctx, r.Client, &apps[i], schedule.Name); err != nil {
-					logger.Error(err, "failed to remove labels from ArgoCD app during cleanup", "app", apps[i].GetName())
+					logger.Error(err, "failed to remove labels from ArgoCD app during restore", "app", apps[i].GetName())
 				}
 			}
 		}
@@ -372,41 +415,93 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 	if schedule.Spec.FluxCD != nil {
 		resources, err := DiscoverFluxResources(ctx, r.Client, schedule.Spec.FluxCD, namespaces)
 		if err != nil {
-			logger.Error(err, "failed to discover Flux resources during cleanup")
+			logger.Error(err, "failed to discover Flux resources during restore")
 		} else {
 			for i := range resources {
 				if _, err := ResumeFluxResource(ctx, r.Client, &resources[i], schedule.Name); err != nil {
-					logger.Error(err, "failed to resume Flux resource during cleanup", "resource", resources[i].GetName())
+					logger.Error(err, "failed to resume Flux resource during restore", "resource", resources[i].GetName())
 				}
 			}
 		}
 	}
 
-	// Record events based on cleanup result
-	if len(restoreErrors) > 0 {
-		logger.Error(nil, "failed to restore some workloads during cleanup",
-			"schedule", schedule.Name,
-			"errors", restoreErrors)
+	return restoreErrors
+}
 
-		if r.Recorder != nil {
-			r.Recorder.Eventf(schedule, nil, corev1.EventTypeWarning, "CleanupPartialFailure", "Cleanup",
-				"Failed to restore %d workload(s) during deletion: %s",
-				len(restoreErrors), strings.Join(restoreErrors, "; "))
+// releaseOrphanedNamespaces restores workloads this schedule still owns in namespaces that
+// are no longer in its target set. Best-effort: errors are logged, not returned, so they
+// never block the main reconcile - the next reconcile retries via optimistic concurrency.
+func (r *LightsOutScheduleReconciler) releaseOrphanedNamespaces(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, targetNamespaces []string) {
+	logger := log.FromContext(ctx)
+
+	orphaned, err := r.discoverOrphanedNamespaces(ctx, schedule.Name, targetNamespaces)
+	if err != nil {
+		logger.Error(err, "failed to discover orphaned namespaces, skipping release")
+		return
+	}
+	if len(orphaned) == 0 {
+		return
+	}
+
+	logger.Info("releasing workloads in namespaces removed from schedule", "namespaces", orphaned)
+	if errs := r.restoreManagedWorkloads(ctx, schedule, orphaned); len(errs) > 0 {
+		logger.Error(nil, "failed to release some orphaned workloads", "errors", errs)
+	}
+}
+
+// discoverOrphanedNamespaces returns namespaces that hold workloads still labeled
+// managed-by this schedule but which are no longer in the target set. The managed-by
+// label is server-side indexed, so the cluster-wide list is cheap.
+//
+// Orphaned namespaces are derived from managed workloads (deploy/sts/cj) only.
+// An ArgoCD/Flux resource whose destination namespace has zero managed workloads would not
+// be swept here (its labels linger until the namespace is re-added or the schedule deleted).
+// We will add per-integration cluster-wide label scans if that edge case shows up in practice.
+func (r *LightsOutScheduleReconciler) discoverOrphanedNamespaces(ctx context.Context, scheduleName string, targetNamespaces []string) ([]string, error) {
+	active := make(map[string]struct{}, len(targetNamespaces))
+	for _, ns := range targetNamespaces {
+		active[ns] = struct{}{}
+	}
+
+	orphaned := make(map[string]struct{})
+	add := func(ns string) {
+		if _, ok := active[ns]; !ok {
+			orphaned[ns] = struct{}{}
 		}
-
-		// Don't remove finalizer if there were errors - this will trigger a retry
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	logger.Info("cleanup complete, all managed workloads restored")
-	if r.Recorder != nil {
-		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "CleanupComplete", "Cleanup",
-			"All managed workloads restored to original state")
+	sel := client.MatchingLabels{constants.ManagedByLabel: scheduleName}
+
+	var deploys appsv1.DeploymentList
+	if err := r.List(ctx, &deploys, sel); err != nil {
+		return nil, err
+	}
+	for i := range deploys.Items {
+		add(deploys.Items[i].Namespace)
 	}
 
-	// Remove finalizer to allow deletion
-	controllerutil.RemoveFinalizer(schedule, constants.FinalizerName)
-	return ctrl.Result{}, r.Update(ctx, schedule)
+	var statefulsets appsv1.StatefulSetList
+	if err := r.List(ctx, &statefulsets, sel); err != nil {
+		return nil, err
+	}
+	for i := range statefulsets.Items {
+		add(statefulsets.Items[i].Namespace)
+	}
+
+	var cronjobs batchv1.CronJobList
+	if err := r.List(ctx, &cronjobs, sel); err != nil {
+		return nil, err
+	}
+	for i := range cronjobs.Items {
+		add(cronjobs.Items[i].Namespace)
+	}
+
+	result := make([]string, 0, len(orphaned))
+	for ns := range orphaned {
+		result = append(result, ns)
+	}
+	slices.Sort(result)
+	return result, nil
 }
 
 // calculateRequeueAfter returns how long to wait before the next reconciliation.
