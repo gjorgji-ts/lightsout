@@ -65,7 +65,7 @@ jobs:
           git tag "v${VERSION}"
           git push "https://x-access-token:${APP_TOKEN}@github.com/${REPO}.git" "v${VERSION}"
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         if: steps.check.outputs.skip == 'false'
         with:
           go-version-file: "go.mod"
