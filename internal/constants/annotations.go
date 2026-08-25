@@ -75,4 +75,7 @@ const (
 
 	// EventReasonScaledDown is the Kubernetes event reason string when workloads are scaled down
 	EventReasonScaledDown = "ScaledDown"
+
+	// ConditionTypeReady is the status condition type reported on schedules after reconcile
+	ConditionTypeReady = "Ready"
 )

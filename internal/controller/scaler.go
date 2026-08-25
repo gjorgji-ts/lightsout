@@ -16,6 +16,12 @@ import (
 	"github.com/gjorgji-ts/lightsout/internal/constants"
 )
 
+// Skip reasons reported on ScaleResult when a workload is not scaled.
+const (
+	skipReasonDifferentSchedule = "managed by different schedule"
+	skipReasonNotManaged        = "not managed by lightsout"
+)
+
 // ScaleResult contains the result of a scaling operation
 type ScaleResult struct {
 	Skipped       bool
@@ -47,7 +53,7 @@ func scaleDeploymentDown(ctx context.Context, c client.Client, deploy *appsv1.De
 	// Skip if managed by different schedule
 	if managedBy != "" && managedBy != scheduleName {
 		logger.Info("skipping deployment: managed by different schedule", "managedBy", managedBy)
-		return &ScaleResult{Skipped: true, SkipReason: "managed by different schedule"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonDifferentSchedule}, nil
 	}
 
 	// Skip if already scaled down (has original-replicas annotation)
@@ -107,13 +113,13 @@ func scaleDeploymentUp(ctx context.Context, c client.Client, deploy *appsv1.Depl
 			logger.Error(hpaErr, "failed to restore HPA during skip check, continuing")
 		}
 		logger.V(1).Info("skipping deployment: no original-replicas annotation")
-		return &ScaleResult{Skipped: true, SkipReason: "not managed by lightsout"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonNotManaged}, nil
 	}
 
 	// Skip if managed by different schedule
 	if managedBy != "" && managedBy != scheduleName {
 		logger.Info("skipping deployment: managed by different schedule", "managedBy", managedBy)
-		return &ScaleResult{Skipped: true, SkipReason: "managed by different schedule"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonDifferentSchedule}, nil
 	}
 
 	// Parse original replicas
@@ -172,7 +178,7 @@ func scaleStatefulSetDown(ctx context.Context, c client.Client, sts *appsv1.Stat
 	// Skip if managed by different schedule
 	if managedBy != "" && managedBy != scheduleName {
 		logger.Info("skipping statefulset: managed by different schedule", "managedBy", managedBy)
-		return &ScaleResult{Skipped: true, SkipReason: "managed by different schedule"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonDifferentSchedule}, nil
 	}
 
 	// Skip if already scaled down (has original-replicas annotation)
@@ -232,13 +238,13 @@ func scaleStatefulSetUp(ctx context.Context, c client.Client, sts *appsv1.Statef
 			logger.Error(hpaErr, "failed to restore HPA during skip check, continuing")
 		}
 		logger.V(1).Info("skipping statefulset: no original-replicas annotation")
-		return &ScaleResult{Skipped: true, SkipReason: "not managed by lightsout"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonNotManaged}, nil
 	}
 
 	// Skip if managed by different schedule
 	if managedBy != "" && managedBy != scheduleName {
 		logger.Info("skipping statefulset: managed by different schedule", "managedBy", managedBy)
-		return &ScaleResult{Skipped: true, SkipReason: "managed by different schedule"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonDifferentSchedule}, nil
 	}
 
 	// Parse original replicas
@@ -331,7 +337,7 @@ func scaleCronJobDown(ctx context.Context, c client.Client, cj *batchv1.CronJob,
 	// Skip if managed by different schedule
 	if managedBy != "" && managedBy != scheduleName {
 		logger.Info("skipping cronjob: managed by different schedule", "managedBy", managedBy)
-		return &ScaleResult{Skipped: true, SkipReason: "managed by different schedule"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonDifferentSchedule}, nil
 	}
 
 	// Skip if already has annotation (already managed)
@@ -392,13 +398,13 @@ func scaleCronJobUp(ctx context.Context, c client.Client, cj *batchv1.CronJob, s
 	// If not managed by us, skip
 	if originalSuspend != constants.SuspendedByLightsOut {
 		logger.V(1).Info("skipping cronjob: not managed by lightsout")
-		return &ScaleResult{Skipped: true, SkipReason: "not managed by lightsout"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonNotManaged}, nil
 	}
 
 	// Skip if managed by different schedule
 	if managedBy != "" && managedBy != scheduleName {
 		logger.Info("skipping cronjob: managed by different schedule", "managedBy", managedBy)
-		return &ScaleResult{Skipped: true, SkipReason: "managed by different schedule"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonDifferentSchedule}, nil
 	}
 
 	// Resume the cronjob

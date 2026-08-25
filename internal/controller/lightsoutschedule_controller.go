@@ -211,7 +211,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Set Ready condition
 	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               constants.ConditionTypeReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "ReconcileSucceeded",
 		Message:            "Successfully reconciled schedule",
@@ -278,7 +278,7 @@ func (r *LightsOutScheduleReconciler) scaleWorkloads(
 
 func (r *LightsOutScheduleReconciler) setErrorCondition(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, err error) {
 	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               constants.ConditionTypeReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             "ReconcileFailed",
 		Message:            err.Error(),
