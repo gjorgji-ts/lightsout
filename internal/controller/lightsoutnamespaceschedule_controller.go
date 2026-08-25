@@ -189,7 +189,7 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 
 	// Set Ready condition
 	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               constants.ConditionTypeReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "ReconcileSucceeded",
 		Message:            "Successfully reconciled namespace schedule",
@@ -253,7 +253,7 @@ func (r *LightsOutNamespaceScheduleReconciler) scaleWorkloads(
 
 func (r *LightsOutNamespaceScheduleReconciler) setErrorCondition(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutNamespaceSchedule, err error) {
 	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               constants.ConditionTypeReady,
 		Status:             metav1.ConditionFalse,
 		Reason:             "ReconcileFailed",
 		Message:            err.Error(),

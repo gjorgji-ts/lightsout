@@ -21,6 +21,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// Prometheus metric label names.
+const (
+	labelSchedule       = "schedule"
+	labelTransitionType = "transition_type"
+	labelNamespace      = "namespace"
+	labelWorkloadType   = "workload_type"
+	labelOperation      = "operation"
+	labelDirection      = "direction"
+	labelResult         = "result"
+)
+
 var (
 	// ScheduleState tracks the current state of each schedule (0=Down, 1=Up, 2=WarmingUp)
 	ScheduleState = prometheus.NewGaugeVec(
@@ -28,7 +39,7 @@ var (
 			Name: "lightsout_schedule_state",
 			Help: "Current state of schedule (0=Down, 1=Up, 2=WarmingUp)",
 		},
-		[]string{"schedule"},
+		[]string{labelSchedule},
 	)
 
 	// NextTransitionSeconds tracks seconds until next state transition
@@ -37,7 +48,7 @@ var (
 			Name: "lightsout_next_transition_seconds",
 			Help: "Seconds until next state transition",
 		},
-		[]string{"schedule", "transition_type"},
+		[]string{labelSchedule, labelTransitionType},
 	)
 
 	// ScalingOperationsTotal counts scaling operations performed
@@ -46,7 +57,7 @@ var (
 			Name: "lightsout_scaling_operations_total",
 			Help: "Total number of scaling operations performed",
 		},
-		[]string{"schedule", "namespace", "workload_type", "operation"},
+		[]string{labelSchedule, labelNamespace, labelWorkloadType, labelOperation},
 	)
 
 	// ScalingErrorsTotal counts scaling errors
@@ -55,7 +66,7 @@ var (
 			Name: "lightsout_scaling_errors_total",
 			Help: "Total number of scaling errors",
 		},
-		[]string{"schedule", "namespace", "workload_type"},
+		[]string{labelSchedule, labelNamespace, labelWorkloadType},
 	)
 
 	// ManagedWorkloads tracks the number of workloads being managed
@@ -64,7 +75,7 @@ var (
 			Name: "lightsout_managed_workloads",
 			Help: "Number of workloads being managed",
 		},
-		[]string{"schedule", "workload_type"},
+		[]string{labelSchedule, labelWorkloadType},
 	)
 
 	// ScalingBatchesTotal counts batches processed during scaling
@@ -73,7 +84,7 @@ var (
 			Name: "lightsout_scaling_batches_total",
 			Help: "Total number of batches processed during scaling",
 		},
-		[]string{"schedule", "direction"},
+		[]string{labelSchedule, labelDirection},
 	)
 
 	// ScalingWorkloadsProcessed counts workloads processed during scaling
@@ -82,7 +93,7 @@ var (
 			Name: "lightsout_scaling_workloads_processed_total",
 			Help: "Total workloads processed during scaling",
 		},
-		[]string{"schedule", "direction", "result"},
+		[]string{labelSchedule, labelDirection, labelResult},
 	)
 
 	// ScalingDurationSeconds tracks time taken to complete scaling operations
@@ -92,7 +103,7 @@ var (
 			Help:    "Time taken to complete all scaling operations",
 			Buckets: []float64{1, 5, 10, 30, 60, 120, 300, 600},
 		},
-		[]string{"schedule", "direction"},
+		[]string{labelSchedule, labelDirection},
 	)
 
 	// LastReconcileTime tracks the unix timestamp of the last successful reconciliation
@@ -101,7 +112,7 @@ var (
 			Name: "lightsout_last_reconcile_timestamp_seconds",
 			Help: "Unix timestamp of last successful reconciliation",
 		},
-		[]string{"schedule"},
+		[]string{labelSchedule},
 	)
 )
 
