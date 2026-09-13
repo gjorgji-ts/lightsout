@@ -87,7 +87,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
 		*) \
 			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+			$(KIND) create cluster --name $(KIND_CLUSTER) $(if $(KIND_NODE_VERSION),--image kindest/node:$(KIND_NODE_VERSION)) ;; \
 	esac
 
 .PHONY: test-e2e
@@ -215,6 +215,10 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.13.1
+
+# KIND_NODE_VERSION pins the Kind node image for e2e (e.g. v1.37.0). Empty = kind binary default.
+# Set to match ENVTEST_K8S_VERSION once the installed kind binary publishes that node image.
+KIND_NODE_VERSION ?=
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
