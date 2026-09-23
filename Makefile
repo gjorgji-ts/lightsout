@@ -111,6 +111,19 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
 
+# Every dependency must stay compatible with this project's Apache-2.0 license.
+# "forbidden" and "restricted" cover the copyleft families (GPL, AGPL, LGPL) whose
+# terms would reach into this codebase. "reciprocal" covers MPL and CDDL, which are
+# weaker but still place conditions on the files they touch.
+.PHONY: license-check
+license-check: go-licenses ## Fail if any dependency carries a copyleft license.
+	"$(GO_LICENSES)" check ./... \
+		--disallowed_types=forbidden,restricted,reciprocal
+
+.PHONY: license-report
+license-report: go-licenses ## Print every dependency and its license as CSV.
+	@"$(GO_LICENSES)" csv ./...
+
 ##@ Build
 
 .PHONY: build
@@ -199,6 +212,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GO_LICENSES ?= $(LOCALBIN)/go-licenses
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.7.1
@@ -215,6 +229,7 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.13.1
+GO_LICENSES_VERSION ?= v1.6.0
 
 # KIND_NODE_VERSION pins the Kind node image for e2e (e.g. v1.37.0). Empty = kind binary default.
 # Set to match ENVTEST_K8S_VERSION once the installed kind binary publishes that node image.
@@ -246,6 +261,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: go-licenses
+go-licenses: $(GO_LICENSES) ## Download go-licenses locally if necessary.
+$(GO_LICENSES): $(LOCALBIN)
+	$(call go-install-tool,$(GO_LICENSES),github.com/google/go-licenses,$(GO_LICENSES_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
