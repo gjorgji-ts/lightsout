@@ -106,6 +106,17 @@ var (
 		[]string{labelSchedule, labelDirection},
 	)
 
+	// StuckTerminatingPods tracks pods that outlived their termination grace period
+	// after a downscale. Downscale only writes the spec, so a pod the kubelet cannot
+	// kill keeps its node alive while the schedule reports Down. Alert on this.
+	StuckTerminatingPods = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "lightsout_stuck_terminating_pods",
+			Help: "Pods still running well past their termination grace period after a downscale",
+		},
+		[]string{labelSchedule, labelNamespace},
+	)
+
 	// LastReconcileTime tracks the unix timestamp of the last successful reconciliation
 	LastReconcileTime = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -126,6 +137,7 @@ func init() {
 		ScalingBatchesTotal,
 		ScalingWorkloadsProcessed,
 		ScalingDurationSeconds,
+		StuckTerminatingPods,
 		LastReconcileTime,
 	)
 }

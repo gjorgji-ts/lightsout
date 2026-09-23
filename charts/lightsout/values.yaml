@@ -24,6 +24,19 @@ rbac:
   # -- Grant permissions to list/watch/patch FluxCD Kustomization and HelmRelease resources.
   # -- Enable only if using the spec.fluxCD integration.
   fluxcd: false
+  # -- Grant permissions on the operator-managed custom resources named in
+  # -- spec.customResources. These API groups are not known ahead of time, so they
+  # -- must be listed here. Each entry takes apiGroups, resources, and optionally
+  # -- verbs (default: get, list, watch, update, patch). Add "delete" to verbs for
+  # -- any resource targeted by a `delete: true` entry.
+  # -- Example:
+  # --   customResources:
+  # --     - apiGroups: ["postgresql.cnpg.io"]
+  # --       resources: ["clusters"]
+  # --     - apiGroups: ["core.strimzi.io"]
+  # --       resources: ["strimzipodsets"]
+  # --       verbs: ["get", "list", "watch", "delete"]
+  customResources: []
 
 resources:
   limits:

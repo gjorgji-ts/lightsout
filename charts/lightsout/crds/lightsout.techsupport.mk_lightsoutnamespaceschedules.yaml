@@ -79,6 +79,111 @@ spec:
                       Defaults to 10 minutes.
                     type: string
                 type: object
+              customResourceWarmupTimeout:
+                default: 10m
+                description: |-
+                  CustomResourceWarmupTimeout bounds how long upscale waits for restored
+                  custom resources to report ready before scaling application workloads up
+                  anyway. Only applies when CustomResources is set. Defaults to 10 minutes.
+                type: string
+              customResources:
+                description: |-
+                  CustomResources turns operator-managed custom resources off during the
+                  downscale window and restores them on upscale. Each entry names one kind
+                  and the fields to set on it.
+
+                  Custom resources are turned off before workloads are scaled down, and
+                  restored before workloads are scaled up, so databases and message brokers
+                  are on their way back before the applications that depend on them start.
+                items:
+                  description: |-
+                    CustomResourceConfig declares how to turn one kind of operator-managed custom
+                    resource off during the downscale window.
+
+                    Workloads created by an operator carry a controller owner reference and are
+                    skipped by the scaler (see IncludeOwnedWorkloads), because the operator would
+                    simply reconcile their replica count back. Turning the operator's own custom
+                    resource off is the supported way to stop them.
+                  properties:
+                    delete:
+                      description: |-
+                        Delete removes matching resources on downscale instead of patching them,
+                        relying on the owning operator to recreate them on upscale. This exists
+                        for operators that offer no off switch, such as Strimzi, where the
+                        documented way to stop a Kafka cluster is to pause reconciliation and
+                        delete the StrimziPodSet resources.
+
+                        Nothing is restored on upscale: recreating the resource is the operator's
+                        job once it resumes reconciling. Entries are processed in declaration
+                        order, so the entry that pauses the operator must come before the entry
+                        that deletes what it manages.
+
+                        Only use this for resources the owning operator rebuilds from a durable
+                        spec. Deleting a resource that holds the only copy of its configuration
+                        loses it permanently.
+                      type: boolean
+                    group:
+                      description: |-
+                        Group is the API group of the custom resource, for example
+                        "postgresql.cnpg.io". Empty means the core group.
+                      type: string
+                    kind:
+                      description: Kind is the kind of the custom resource, for example
+                        "Cluster".
+                      minLength: 1
+                      type: string
+                    matchLabels:
+                      additionalProperties:
+                        type: string
+                      description: MatchLabels narrows which resources of this kind
+                        are targeted.
+                      type: object
+                    name:
+                      description: |-
+                        Name targets a single resource by name. When empty, every resource of
+                        this kind in the schedule's target namespaces is targeted.
+                      type: string
+                    setFields:
+                      description: SetFields are applied on downscale and reverted
+                        on upscale.
+                      items:
+                        description: |-
+                          FieldPatch sets a single field on a custom resource during downscale.
+                          The field's previous value is captured so upscale can restore it exactly,
+                          which matters for replica counts whose desired value lives in Git rather
+                          than in the schedule.
+                        properties:
+                          path:
+                            description: |-
+                              Path is an RFC 6901 JSON Pointer to the field, for example
+                              "/spec/replicas" or "/metadata/annotations/cnpg.io~1hibernation"
+                              ("~1" escapes a literal "/" inside a segment, "~0" a literal "~").
+
+                              A "*" segment matches every element of an array or every key of an
+                              object, so "/spec/nodeSets/*/count" targets every node set without
+                              depending on their order.
+                            minLength: 2
+                            pattern: ^/.*$
+                            type: string
+                          value:
+                            description: Value is the value written to Path during
+                              downscale.
+                            x-kubernetes-preserve-unknown-fields: true
+                        required:
+                        - path
+                        - value
+                        type: object
+                      type: array
+                    version:
+                      description: Version is the API version of the custom resource,
+                        for example "v1".
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  - version
+                  type: object
+                type: array
               downscale:
                 description: Downscale is the cron expression for when to scale workloads
                   down
@@ -168,6 +273,22 @@ spec:
                       Defaults to 10 minutes.
                     type: string
                 type: object
+              includeOwnedWorkloads:
+                default: false
+                description: |-
+                  IncludeOwnedWorkloads allows scaling workloads that are controlled by
+                  another controller (they carry a controller owner reference, e.g. a
+                  StatefulSet created by a database operator from its own CRD).
+
+                  By default these are skipped: the owning controller reconciles the replica
+                  count back from its custom resource, so lightsout would scale the workload
+                  to zero only to have it restored, while its own annotations make subsequent
+                  reconciles treat it as already scaled down.
+
+                  Set this to true only when the owning controller has been paused by other
+                  means (for example an operator-specific pause or suspend annotation), so
+                  nothing will fight the scaling.
+                type: boolean
               suspend:
                 default: false
                 description: Suspend pauses all scaling operations when true
@@ -334,6 +455,14 @@ spec:
                 - Down
                 - Unknown
                 type: string
+              stuckTerminatingPods:
+                description: |-
+                  StuckTerminatingPods counts pods that are still running well past their
+                  termination grace period after a downscale. Scaling a workload to zero only
+                  writes the spec, so a pod the kubelet cannot kill keeps its node alive while
+                  this schedule reports Down. A non-zero value means the namespace did not
+                  release the compute it was scaled down to release.
+                type: integer
               workloadStats:
                 description: WorkloadStats contains statistics about managed workloads
                 properties:

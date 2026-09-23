@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package controller
 
 import (
@@ -6,6 +22,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -386,11 +403,13 @@ func TestLabelArgoCDAppWarmingUp(t *testing.T) {
 func TestCheckWorkloadReadiness(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 
 	tests := []struct {
 		name         string
 		deployments  []appsv1.Deployment
 		statefulsets []appsv1.StatefulSet
+		pods         []corev1.Pod
 		wantReady    bool
 	}{
 		{
@@ -452,16 +471,75 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 			name:      "no workloads returns ready",
 			wantReady: true,
 		},
+		{
+			// CloudNativePG builds its database from bare pods, so nothing here is
+			// covered by the replica counts above.
+			name:      "operator-owned pod not yet ready",
+			pods:      []corev1.Pod{ownedPod("pg-1", "Cluster", corev1.ConditionFalse)},
+			wantReady: false,
+		},
+		{
+			name:      "operator-owned pod ready",
+			pods:      []corev1.Pod{ownedPod("pg-1", "Cluster", corev1.ConditionTrue)},
+			wantReady: true,
+		},
+		{
+			name:      "pod with no owner is checked",
+			pods:      []corev1.Pod{ownedPod("standalone", "", corev1.ConditionFalse)},
+			wantReady: false,
+		},
+		{
+			// Covered by the Deployment replica count, and a rolling update leaves an
+			// unready pod behind that says nothing about the namespace.
+			name:      "replicaset-owned pod is skipped",
+			pods:      []corev1.Pod{ownedPod("web-abc", "ReplicaSet", corev1.ConditionFalse)},
+			wantReady: true,
+		},
+		{
+			name:      "statefulset-owned pod is skipped",
+			pods:      []corev1.Pod{ownedPod("db-0", "StatefulSet", corev1.ConditionFalse)},
+			wantReady: true,
+		},
+		{
+			// A job pod runs to completion and never reports Ready. Waiting on one
+			// would hold the namespace in warming-up until the timeout.
+			name:      "job-owned pod is skipped",
+			pods:      []corev1.Pod{ownedPod("migrate-xyz", "Job", corev1.ConditionFalse)},
+			wantReady: true,
+		},
+		{
+			name: "finished pod is skipped",
+			pods: func() []corev1.Pod {
+				p := ownedPod("pg-backup", "Cluster", corev1.ConditionFalse)
+				p.Status.Phase = corev1.PodSucceeded
+				return []corev1.Pod{p}
+			}(),
+			wantReady: true,
+		},
+		{
+			name: "terminating pod is skipped",
+			pods: func() []corev1.Pod {
+				p := ownedPod("pg-old", "Cluster", corev1.ConditionFalse)
+				now := metav1.NewTime(time.Now())
+				p.DeletionTimestamp = &now
+				p.Finalizers = []string{"lightsout.test/hold"}
+				return []corev1.Pod{p}
+			}(),
+			wantReady: true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			objs := make([]client.Object, 0, len(tt.deployments)+len(tt.statefulsets))
+			objs := make([]client.Object, 0, len(tt.deployments)+len(tt.statefulsets)+len(tt.pods))
 			for i := range tt.deployments {
 				objs = append(objs, &tt.deployments[i])
 			}
 			for i := range tt.statefulsets {
 				objs = append(objs, &tt.statefulsets[i])
+			}
+			for i := range tt.pods {
+				objs = append(objs, &tt.pods[i])
 			}
 
 			fakeClient := fake.NewClientBuilder().
@@ -517,4 +595,28 @@ func TestCompleteArgoCDWarmup(t *testing.T) {
 	if _, exists := updatedApp.GetAnnotations()[constants.WarmingUpSinceAnnotation]; exists {
 		t.Errorf("warming-up-since annotation should be removed from ArgoCD app")
 	}
+}
+
+// ownedPod builds a pod in namespace "dev" with the given controller owner kind
+// and Ready condition. An empty ownerKind leaves the pod with no owner at all.
+func ownedPod(name, ownerKind string, ready corev1.ConditionStatus) corev1.Pod {
+	pod := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "dev"},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodReady, Status: ready},
+			},
+		},
+	}
+	if ownerKind != "" {
+		pod.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "v1",
+			Kind:       ownerKind,
+			Name:       "owner",
+			UID:        "owner-uid",
+			Controller: ptr(true),
+		}}
+	}
+	return pod
 }
