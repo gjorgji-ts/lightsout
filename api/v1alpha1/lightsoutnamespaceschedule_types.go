@@ -60,6 +60,14 @@ type LightsOutNamespaceScheduleStatus struct {
 	// +optional
 	ScalingProgress *ScalingProgress `json:"scalingProgress,omitempty"`
 
+	// StuckTerminatingPods counts pods that are still running well past their
+	// termination grace period after a downscale. Scaling a workload to zero only
+	// writes the spec, so a pod the kubelet cannot kill keeps its node alive while
+	// this schedule reports Down. A non-zero value means the namespace did not
+	// release the compute it was scaled down to release.
+	// +optional
+	StuckTerminatingPods int `json:"stuckTerminatingPods,omitempty"`
+
 	// Conditions represent the current state of the schedule
 	// +listType=map
 	// +listMapKey=type

@@ -182,19 +182,38 @@ See the [FluxCD Integration Guide](fluxcd.md) for full configuration details.
 
 ## Disabling Namespace Schedules
 
-To disable the namespace schedule controller entirely, set `--set namespaceSchedules.enabled=false` during Helm install/upgrade. The CRD is still installed; only the controller registration and RBAC rules are skipped.
+To disable the namespace schedule controller entirely, set `--set namespaceSchedules.enabled=false` during Helm install/upgrade. The CRD is still installed. Only the controller registration and RBAC rules are skipped.
 
 ## Uninstall
 
+> [!IMPORTANT]
+> Delete your schedules **before** you uninstall. Each one carries a
+> `lightsout.techsupport.mk/cleanup` finalizer that only the controller can
+> clear. Uninstall first and the delete never finishes. The resource then waits
+> for a finalizer that nothing is left to process.
+
 ```bash
+kubectl delete lightsoutschedules --all
+kubectl delete lightsoutnamespaceschedules --all -A
 helm uninstall lightsout
 ```
 
-Helm does not remove CRDs on uninstall. To fully clean up:
+Deleting a schedule while the controller runs restores its workloads first.
+
+Helm does not delete CRDs on uninstall. To fully clean up:
 
 ```bash
 kubectl delete crd lightsoutschedules.lightsout.techsupport.mk
 kubectl delete crd lightsoutnamespaceschedules.lightsout.techsupport.mk
 ```
 
-> **Warning**: Deleting the CRDs removes all corresponding schedule resources. If the controller is still running, its finalizer will restore workloads before deletion. If the controller is already gone, workloads will remain in their current state.
+> [!WARNING]
+> Deleting the CRDs removes every schedule resource. If a schedule still exists
+> and the controller is already gone, `kubectl delete crd` hangs on the
+> finalizer. Recover with:
+>
+> ```bash
+> kubectl patch lightsoutschedule <name> --type merge -p '{"metadata":{"finalizers":null}}'
+> ```
+>
+> That skips the restore, so the workloads stay scaled down.

@@ -35,3 +35,6 @@ jobs:
         with:
           version: v2.13.1
           args: --timeout 5m
+
+      - name: Check dependency licenses
+        run: make license-check

@@ -54,6 +54,7 @@ type LightsOutNamespaceScheduleReconciler struct {
 // +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutnamespaceschedules,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutnamespaceschedules/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=lightsout.techsupport.mk,resources=lightsoutnamespaceschedules/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;update;patch
@@ -141,42 +142,61 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 		rateLimit = schedule.Spec.DownscaleRateLimit
 	}
 
-	// ArgoCD and FluxCD labeling/suspension is ordered relative to workload scaling
-	// to prevent false alerts and reconciliation conflicts:
-	// - Downscale: label/suspend integrations first, then scale workloads
-	// - Upscale: scale workloads first, then remove ArgoCD labels / resume FluxCD
-	if !scaleUp && schedule.Spec.ArgoCD != nil {
-		labelArgoCDAppsDown(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.ArgoCD, schedule.Name, namespaces)
+	// Integrations are ordered around workload scaling to prevent false alerts and
+	// reconciliation conflicts:
+	// - Downscale: suspend GitOps controllers and turn custom resources off, then scale
+	// - Upscale: restore custom resources and wait for them, then scale, then resume GitOps
+	scheduleLabel := schedule.Namespace + "/" + schedule.Name
+	integrations := integrationConfig{
+		ScheduleObj:   &schedule,
+		Core:          &schedule.Spec.LightsOutScheduleCore,
+		ScheduleName:  schedule.Name,
+		ScheduleLabel: scheduleLabel,
+		Namespaces:    namespaces,
 	}
-	if !scaleUp && schedule.Spec.FluxCD != nil {
-		labelFluxResourcesDown(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.FluxCD, schedule.Name, namespaces)
+
+	deferWorkloadScaleUp := false
+	if scaleUp {
+		deferWorkloadScaleUp = integrationsUp(ctx, r.Client, r.Recorder, integrations, now)
+	} else {
+		integrationsDown(ctx, r.Client, r.Recorder, integrations)
 	}
 
 	// Scale all workloads (handles collection, budget-based processing, and metrics)
-	scaleResult, err := r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit)
-	if err != nil {
-		logger.Error(err, "failed to scale workloads")
-		r.setErrorCondition(ctx, &schedule, err)
-		return ctrl.Result{}, err
+	scaleResult := &scaleWorkloadsResult{}
+	if deferWorkloadScaleUp {
+		logger.Info("custom resources still warming up, deferring workload scale-up")
+	} else {
+		scaleResult, err = r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit)
+		if err != nil {
+			logger.Error(err, "failed to scale workloads")
+			r.setErrorCondition(ctx, &schedule, err)
+			return ctrl.Result{}, err
+		}
 	}
 
-	stillWarmingUp := false
-	if scaleUp && schedule.Spec.ArgoCD != nil {
-		stillWarmingUp = handleArgoCDWarmup(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.ArgoCD, schedule.Name, namespaces, now)
-	}
-	if scaleUp && schedule.Spec.FluxCD != nil {
-		fluxWarmingUp := handleFluxCDWarmup(ctx, r.Client, r.Recorder, &schedule, schedule.Spec.FluxCD, schedule.Name, namespaces, now)
-		stillWarmingUp = stillWarmingUp || fluxWarmingUp
+	stillWarmingUp := deferWorkloadScaleUp
+	if scaleUp && !deferWorkloadScaleUp {
+		stillWarmingUp = integrationsWarmup(ctx, r.Client, r.Recorder, integrations, now) || stillWarmingUp
 	}
 
 	stats := scaleResult.stats
 
+	// Count what is still running while the schedule is down. Scaling only writes
+	// the spec, so this is the one place that notices pods which never go away.
+	termination := r.checkTermination(ctx, &schedule, scheduleLabel, namespaces, scaleUp, now)
+
 	// Update status (LightsOutNamespaceScheduleStatus has no Namespaces field)
 	schedule.Status.State = lightsoutv1alpha1.ScheduleState(period.State)
-	schedule.Status.WorkloadStats = stats
+	if !deferWorkloadScaleUp {
+		// While scale-up is deferred no workloads were visited, so the stats from the
+		// downscale still describe reality: everything is down and waiting.
+		schedule.Status.WorkloadStats = stats
+	}
 	schedule.Status.ObservedGeneration = schedule.Generation
 	schedule.Status.NextUpscaleTime = &metav1.Time{Time: period.NextUpscale}
 	schedule.Status.NextDownscaleTime = &metav1.Time{Time: period.NextDownscale}
+	schedule.Status.StuckTerminatingPods = termination.Stuck
 	schedule.Status.ScalingProgress = nil
 	if scaleResult.batchLimitReached {
 		schedule.Status.ScalingProgress = &lightsoutv1alpha1.ScalingProgress{
@@ -201,11 +221,13 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 		return ctrl.Result{}, err
 	}
 
-	// Record events for scaling operations
-	recordScalingEvents(r.Recorder, &schedule, scaleUp, stats, namespaces)
+	// Record events for scaling operations. Skipped while scale-up is deferred:
+	// no workload was touched, so there is nothing to report.
+	if !deferWorkloadScaleUp {
+		recordScalingEvents(r.Recorder, &schedule, scaleUp, stats, namespaces)
+	}
 
-	// Record metrics - use "namespace/name" as label to distinguish from global schedules
-	scheduleLabel := schedule.Namespace + "/" + schedule.Name
+	// Record metrics - scheduleLabel is "namespace/name" to distinguish from global schedules
 	stateValue := float64(0)
 	if stillWarmingUp {
 		stateValue = 2
@@ -217,14 +239,18 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 	NextTransitionSeconds.WithLabelValues(scheduleLabel, "upscale").Set(time.Until(period.NextUpscale).Seconds())
 	NextTransitionSeconds.WithLabelValues(scheduleLabel, "downscale").Set(time.Until(period.NextDownscale).Seconds())
 
-	ManagedWorkloads.WithLabelValues(scheduleLabel, "deployment").Set(float64(stats.DeploymentsManaged))
-	ManagedWorkloads.WithLabelValues(scheduleLabel, "statefulset").Set(float64(stats.StatefulSetsManaged))
-	ManagedWorkloads.WithLabelValues(scheduleLabel, "cronjob").Set(float64(stats.CronJobsManaged))
+	// Report the persisted stats: while scale-up is deferred the local stats are empty
+	// because no workload was visited, but the workloads themselves are still managed.
+	reported := schedule.Status.WorkloadStats
+	ManagedWorkloads.WithLabelValues(scheduleLabel, "deployment").Set(float64(reported.DeploymentsManaged))
+	ManagedWorkloads.WithLabelValues(scheduleLabel, "statefulset").Set(float64(reported.StatefulSetsManaged))
+	ManagedWorkloads.WithLabelValues(scheduleLabel, "cronjob").Set(float64(reported.CronJobsManaged))
 
 	LastReconcileTime.WithLabelValues(scheduleLabel).SetToCurrentTime()
 
 	// Calculate requeue time
 	requeueAfter := calculateRequeueAfter(period, scaleUp, scaleResult, rateLimit, stillWarmingUp, now)
+	requeueAfter = applyTerminationRequeue(requeueAfter, termination, !scaleUp && scaleResult.totalProcessed > 0)
 
 	logger.Info("reconciliation complete", "requeueAfter", requeueAfter, "batchLimitReached", scaleResult.batchLimitReached)
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
@@ -249,6 +275,31 @@ func (r *LightsOutNamespaceScheduleReconciler) scaleWorkloads(
 		TransferOwnership: true,
 	}
 	return scaleWorkloads(ctx, r.Client, &schedule.Spec.LightsOutScheduleCore, cfg, r.Recorder)
+}
+
+// checkTermination counts terminating pods in the managed namespaces and reports
+// the ones that have outlived their grace period. See the cluster-scoped
+// reconciler's method of the same name for why it only runs while down.
+func (r *LightsOutNamespaceScheduleReconciler) checkTermination(
+	ctx context.Context,
+	schedule *lightsoutv1alpha1.LightsOutNamespaceSchedule,
+	scheduleLabel string,
+	namespaces []string,
+	scaleUp bool,
+	now time.Time,
+) terminationReport {
+	if scaleUp {
+		clearStuckTerminatingPods(scheduleLabel, namespaces)
+		return terminationReport{}
+	}
+
+	report, err := countTerminatingPods(ctx, r.Client, namespaces, now)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to count terminating pods")
+		return terminationReport{}
+	}
+	reportStuckTerminatingPods(ctx, r.Recorder, schedule, scheduleLabel, report)
+	return report
 }
 
 func (r *LightsOutNamespaceScheduleReconciler) setErrorCondition(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutNamespaceSchedule, err error) {
@@ -349,6 +400,18 @@ func (r *LightsOutNamespaceScheduleReconciler) handleDeletion(ctx context.Contex
 				}
 			}
 		}
+	}
+
+	// Restore custom resources this schedule turned off. Resources removed by a
+	// `delete` entry are not restored here: rebuilding them is their operator's job
+	// once the paused entry alongside them is restored.
+	if len(schedule.Spec.CustomResources) > 0 {
+		now := time.Now()
+		if r.TimeFunc != nil {
+			now = r.TimeFunc()
+		}
+		restoreErrors = append(restoreErrors,
+			restoreAllCustomResources(ctx, r.Client, &schedule.Spec.LightsOutScheduleCore, schedule.Name, []string{ns}, now)...)
 	}
 
 	// Record events based on cleanup result

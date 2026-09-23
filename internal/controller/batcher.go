@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package controller
 
 import (
@@ -6,6 +22,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -70,7 +87,7 @@ type scaleWorkloadsResult struct {
 	totalProcessed    int
 	totalFailed       int
 	totalSkipped      int
-	totalWorkloads    int // full collection size; set only when batchLimitReached is true
+	totalWorkloads    int // full collection size, set only when batchLimitReached is true
 	batchLimitReached bool
 }
 
@@ -78,7 +95,7 @@ type scaleWorkloadsResult struct {
 type scaleWorkloadsConfig struct {
 	// ScheduleName is the name of the schedule CR (used for label-based lookups and events).
 	ScheduleName string
-	// ScheduleLabel is the Prometheus metric label. Global schedules use the name; namespace
+	// ScheduleLabel is the Prometheus metric label. Global schedules use the name. Namespace
 	// schedules use "namespace/name" to avoid collisions.
 	ScheduleLabel string
 	// ScheduleKind is the human-readable schedule type used in event messages
@@ -88,15 +105,31 @@ type scaleWorkloadsConfig struct {
 	Namespaces []string
 	// ScaleUp indicates the desired direction.
 	ScaleUp bool
-	// RateLimit configures optional batching; nil means unlimited.
+	// RateLimit configures optional batching. A nil value means unlimited.
 	RateLimit *lightsoutv1alpha1.RateLimitConfig
 	// TransferOwnership, when true, re-stamps workloads that carry a foreign managed-by
 	// label so the caller's schedule takes precedence (used by namespace schedules).
 	TransferOwnership bool
 }
 
-// buildStatsFromWorkloads creates WorkloadStats from a collected workload slice.
-func buildStatsFromWorkloads(workloads []Workload, scaleUp bool) lightsoutv1alpha1.WorkloadStats {
+// hasControllerOwner reports whether the object is controlled by another controller.
+// Workloads created by an operator from its own custom resource (a StatefulSet built
+// from a database CRD, for example) carry such a reference. The owning controller
+// reconciles their replica count, so lightsout must not fight it.
+func hasControllerOwner(refs []metav1.OwnerReference) bool {
+	for _, ref := range refs {
+		if ref.Controller != nil && *ref.Controller {
+			return true
+		}
+	}
+	return false
+}
+
+// countManagedWorkloads fills in the *Managed counters from a collected workload slice.
+// The *Scaled counters are accumulated separately as workloads are processed, because
+// collection membership says nothing about whether a workload actually reached the
+// scaled-down state.
+func countManagedWorkloads(workloads []Workload) lightsoutv1alpha1.WorkloadStats {
 	stats := lightsoutv1alpha1.WorkloadStats{}
 
 	for _, w := range workloads {
@@ -110,14 +143,39 @@ func buildStatsFromWorkloads(workloads []Workload, scaleUp bool) lightsoutv1alph
 		}
 	}
 
-	// For downscale, track how many were actually scaled
-	if !scaleUp {
-		stats.DeploymentsScaled = stats.DeploymentsManaged
-		stats.StatefulSetsScaled = stats.StatefulSetsManaged
-		stats.CronJobsSuspended = stats.CronJobsManaged
-	}
-
 	return stats
+}
+
+// isScaledDownByLightsOut reports whether the workload currently sits in the
+// scaled-down state under lightsout's control, based on the annotations left on the
+// object by the scaler.
+//
+// This is deliberately read from the object rather than from the ScaleResult: a
+// workload skipped as "already scaled down" is still down, while one skipped because
+// a user parked it at zero replicas, or because another schedule owns it, is not ours
+// to count. It also stays correct across requeues in a batched run.
+func isScaledDownByLightsOut(w Workload) bool {
+	switch w.Type {
+	case WorkloadTypeDeployment:
+		return w.Deployment.Annotations[constants.OriginalReplicasAnnotation] != ""
+	case WorkloadTypeStatefulSet:
+		return w.StatefulSet.Annotations[constants.OriginalReplicasAnnotation] != ""
+	case WorkloadTypeCronJob:
+		return w.CronJob.Annotations[constants.OriginalSuspendAnnotation] == constants.SuspendedByLightsOut
+	}
+	return false
+}
+
+// recordScaledWorkload increments the scaled counter matching the workload type.
+func recordScaledWorkload(stats *lightsoutv1alpha1.WorkloadStats, w Workload) {
+	switch w.Type {
+	case WorkloadTypeDeployment:
+		stats.DeploymentsScaled++
+	case WorkloadTypeStatefulSet:
+		stats.StatefulSetsScaled++
+	case WorkloadTypeCronJob:
+		stats.CronJobsSuspended++
+	}
 }
 
 // collectWorkloads gathers all workloads from the given namespaces, applying
@@ -183,6 +241,10 @@ func collectNamespaceDeployments(ctx context.Context, c client.Client, ns string
 		if excluded {
 			continue
 		}
+		if !core.IncludeOwnedWorkloads && hasControllerOwner(deploy.OwnerReferences) {
+			logger.V(1).Info("skipping deployment: controlled by another controller", "deployment", deploy.Name, "namespace", ns)
+			continue
+		}
 		if transferOwnership {
 			if existingOwner := deploy.Labels[constants.ManagedByLabel]; existingOwner != "" && existingOwner != scheduleName {
 				logger.Info("transferring deployment ownership to namespace schedule", "deployment", deploy.Name, "from", existingOwner)
@@ -219,6 +281,10 @@ func collectNamespaceStatefulSets(ctx context.Context, c client.Client, ns strin
 		if excluded {
 			continue
 		}
+		if !core.IncludeOwnedWorkloads && hasControllerOwner(sts.OwnerReferences) {
+			logger.V(1).Info("skipping statefulset: controlled by another controller", "statefulset", sts.Name, "namespace", ns)
+			continue
+		}
 		if transferOwnership {
 			if existingOwner := sts.Labels[constants.ManagedByLabel]; existingOwner != "" && existingOwner != scheduleName {
 				logger.Info("transferring statefulset ownership to namespace schedule", "statefulset", sts.Name, "from", existingOwner)
@@ -253,6 +319,10 @@ func collectNamespaceCronJobs(ctx context.Context, c client.Client, ns string, c
 			continue
 		}
 		if excluded {
+			continue
+		}
+		if !core.IncludeOwnedWorkloads && hasControllerOwner(cj.OwnerReferences) {
+			logger.V(1).Info("skipping cronjob: controlled by another controller", "cronjob", cj.Name, "namespace", ns)
 			continue
 		}
 		if transferOwnership {
@@ -325,6 +395,11 @@ func scaleWorkloads(
 	var totalProcessed, totalFailed, totalSkipped int
 	startTime := time.Now()
 
+	// Managed counts come from the collection. Scaled counts accumulate below from the
+	// state each workload ends up in, so skipped and failed workloads are never
+	// reported as scaled.
+	stats := countManagedWorkloads(workloads)
+
 	for i, w := range workloads {
 		// Check for context cancellation between workloads for faster shutdown response
 		select {
@@ -332,7 +407,7 @@ func scaleWorkloads(
 			logger.Info("context cancelled during workload processing, will resume on next reconcile",
 				"processed", totalProcessed, "total", len(workloads))
 			return &scaleWorkloadsResult{
-				stats:          buildStatsFromWorkloads(workloads, cfg.ScaleUp),
+				stats:          stats,
 				totalProcessed: totalProcessed,
 				totalFailed:    totalFailed,
 				totalSkipped:   totalSkipped,
@@ -360,6 +435,13 @@ func scaleWorkloads(
 			continue
 		}
 
+		// Record the resulting state before branching on Skipped: a workload skipped as
+		// "already scaled down" is still down and must be counted, while one skipped
+		// because a user parked it at zero or another schedule owns it must not be.
+		if isScaledDownByLightsOut(w) {
+			recordScaledWorkload(&stats, w)
+		}
+
 		if scaleResult.Skipped {
 			totalSkipped++
 			continue
@@ -385,7 +467,7 @@ func scaleWorkloads(
 					ScalingDurationSeconds.WithLabelValues(cfg.ScheduleLabel, direction).Observe(time.Since(startTime).Seconds())
 
 					return &scaleWorkloadsResult{
-						stats:             buildStatsFromWorkloads(workloads, cfg.ScaleUp),
+						stats:             stats,
 						totalProcessed:    totalProcessed,
 						totalFailed:       totalFailed,
 						totalSkipped:      totalSkipped,
@@ -404,7 +486,7 @@ func scaleWorkloads(
 	}
 
 	return &scaleWorkloadsResult{
-		stats:          buildStatsFromWorkloads(workloads, cfg.ScaleUp),
+		stats:          stats,
 		totalProcessed: totalProcessed,
 		totalFailed:    totalFailed,
 		totalSkipped:   totalSkipped,

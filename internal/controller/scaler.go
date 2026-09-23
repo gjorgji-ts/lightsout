@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package controller
 
 import (
@@ -32,7 +48,7 @@ type ScaleResult struct {
 
 // ScaleDeployment scales a deployment up or down based on the period.
 // scaleUp=true means restore to original replicas, scaleUp=false means scale to 0.
-// hpaList is the pre-fetched HPA list for the deployment's namespace; pass nil to skip HPA handling.
+// hpaList is the pre-fetched HPA list for the deployment's namespace. Pass nil to skip HPA handling.
 func ScaleDeployment(ctx context.Context, c client.Client, deploy *appsv1.Deployment, scheduleName string, scaleUp bool, hpaList *unstructured.UnstructuredList) (*ScaleResult, error) {
 	logger := log.FromContext(ctx).WithValues("deployment", deploy.Name, "namespace", deploy.Namespace)
 

@@ -90,14 +90,47 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			$(KIND) create cluster --name $(KIND_CLUSTER) $(if $(KIND_NODE_VERSION),--image kindest/node:$(KIND_NODE_VERSION)) ;; \
 	esac
 
+# The stuck-termination spec waits out two controller poll intervals, which puts
+# the suite near 30 minutes. 60m leaves room for a slow machine rather than
+# killing the run partway and reporting specs that never executed.
+E2E_TIMEOUT ?= 60m
+
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout 20m
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout $(E2E_TIMEOUT)
 	$(MAKE) cleanup-test-e2e
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+
+# Operator integration e2e tests. Each case installs a real operator and its data
+# plane, so they are opt-in and run one at a time. OPERATOR accepts a single key,
+# a comma-separated list, or "all" (needs a large machine).
+# Keys: rabbitmq clickhouse cnpg eck keycloak mariadb redis strimzi starrocks starrocks-shared
+OPERATOR ?=
+E2E_OPERATOR_TIMEOUT ?= 90m
+# E2E_REUSE=true keeps cert-manager, the CRDs and the controller deployed between
+# invocations, saving ~70-110s each. The controller is restarted so a rebuilt image
+# still takes effect. Tear everything down with `make cleanup-test-e2e`.
+E2E_REUSE ?= false
+
+# Guard runs before setup-test-e2e so a missing OPERATOR does not leave a Kind
+# cluster behind.
+.PHONY: check-operator-arg
+check-operator-arg:
+	@if [ -z "$(OPERATOR)" ]; then \
+		echo "Set OPERATOR to one or more of: rabbitmq clickhouse cnpg eck keycloak mariadb redis strimzi starrocks starrocks-shared (or 'all')."; \
+		echo "  make test-e2e-operator OPERATOR=rabbitmq"; \
+		echo "See test/e2e/README.md for the resource footprint of each case."; \
+		exit 1; \
+	fi
+
+.PHONY: test-e2e-operator
+test-e2e-operator: check-operator-arg setup-test-e2e manifests generate fmt vet ## Run operator integration e2e tests. Usage: make test-e2e-operator OPERATOR=cnpg
+	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) OPERATORS=$(OPERATOR) E2E_REUSE=$(E2E_REUSE) \
+		go test -tags='e2e operators' ./test/e2e/ -v -ginkgo.v \
+		-ginkgo.focus='Operator Integration' -ginkgo.silence-skips -timeout $(E2E_OPERATOR_TIMEOUT)
 
 .PHONY: lint
 lint: golangci-lint helm-rbac-check ## Run golangci-lint linter and verify Helm chart RBAC rules.
@@ -110,6 +143,19 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 .PHONY: lint-config
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
 	"$(GOLANGCI_LINT)" config verify
+
+# Every dependency must stay compatible with this project's Apache-2.0 license.
+# "forbidden" and "restricted" cover the copyleft families (GPL, AGPL, LGPL) whose
+# terms would reach into this codebase. "reciprocal" covers MPL and CDDL, which are
+# weaker but still place conditions on the files they touch.
+.PHONY: license-check
+license-check: go-licenses ## Fail if any dependency carries a copyleft license.
+	"$(GO_LICENSES)" check ./... \
+		--disallowed_types=forbidden,restricted,reciprocal
+
+.PHONY: license-report
+license-report: go-licenses ## Print every dependency and its license as CSV.
+	@"$(GO_LICENSES)" csv ./...
 
 ##@ Build
 
@@ -199,6 +245,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+GO_LICENSES ?= $(LOCALBIN)/go-licenses
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.7.1
@@ -215,6 +262,7 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
   printf '%s\n' "$$v" | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')
 
 GOLANGCI_LINT_VERSION ?= v2.13.1
+GO_LICENSES_VERSION ?= v1.6.0
 
 # KIND_NODE_VERSION pins the Kind node image for e2e (e.g. v1.37.0). Empty = kind binary default.
 # Set to match ENVTEST_K8S_VERSION once the installed kind binary publishes that node image.
@@ -246,6 +294,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: go-licenses
+go-licenses: $(GO_LICENSES) ## Download go-licenses locally if necessary.
+$(GO_LICENSES): $(LOCALBIN)
+	$(call go-install-tool,$(GO_LICENSES),github.com/google/go-licenses,$(GO_LICENSES_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

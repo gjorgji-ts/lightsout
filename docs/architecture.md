@@ -81,6 +81,7 @@ LightsOut runs two reconcilers in the same operator process.
 - Filters out any namespace that already has a `LightsOutNamespaceSchedule` (namespace-scoped schedules take precedence)
 - Collects workloads (Deployments, StatefulSets, CronJobs) across the remaining namespaces
 - Filters out excluded workloads via `excludeLabels`
+- Filters out workloads controlled by another controller, unless `includeOwnedWorkloads` is set
 - If ArgoCD integration is enabled, labels/unlabels ArgoCD Application CRDs (ordered relative to scaling)
 - If FluxCD integration is enabled, suspends/resumes FluxCD Kustomization and HelmRelease resources (ordered relative to scaling)
 - Delegates to the Workload Scaler for actual scaling (with budget-based rate limiting when configured)
@@ -102,7 +103,7 @@ It uses adaptive search windows based on cron frequency to efficiently find the 
 
 ### Namespace Discovery
 
-Resolves which namespaces are in scope (`internal/controller/namespace.go`). Used only by the cluster-scoped reconciler; the namespace-scoped reconciler always targets its own namespace implicitly. It supports three targeting mechanisms that can be combined:
+Resolves which namespaces are in scope (`internal/controller/namespace.go`). Used only by the cluster-scoped reconciler. The namespace-scoped reconciler always targets its own namespace implicitly. It supports three targeting mechanisms that can be combined:
 
 - **Label selectors** (`namespaceSelector`) - select namespaces by labels
 - **Explicit lists** (`namespaces`) - name specific namespaces
@@ -116,14 +117,15 @@ After discovery, the global reconciler calls `FilterNamespacesWithLocalSchedules
 
 Handles the actual scaling of Kubernetes workloads (`internal/controller/scaler.go`):
 
-- **Deployments and StatefulSets** - scales replicas to 0 on downscale; restores from the `original-replicas` annotation on upscale
-- **CronJobs** - suspends on downscale; unsuspends on upscale (only if LightsOut was the one that suspended it)
+- **Deployments and StatefulSets** - scales replicas to 0 on downscale. Restores from the `original-replicas` annotation on upscale
+- **CronJobs** - suspends on downscale. Unsuspends on upscale, but only if LightsOut was the one that suspended it
 
 Key design properties:
 
 - **Idempotent** - safe to retry. If a workload is already scaled down, it won't be touched again.
 - **Respects user intent** - if a user manually scales a workload while it's managed, LightsOut tracks this and won't overwrite user changes.
 - **Managed-by tracking** - each workload is annotated with the schedule name that manages it, preventing conflicts between schedules.
+- **Spec-only, then observed** - scaling writes the replica count and returns without waiting for pods. A downscale then counts terminating pods and publishes `lightsout_stuck_terminating_pods`, so a pod that never goes away cannot hold its node unnoticed.
 
 ### Rate Limiting
 
@@ -169,6 +171,27 @@ Execution is ordered to prevent FluxCD from reconciling workloads back to their 
 - **Downscale**: suspend Flux resources first, then scale workloads
 - **Upscale**: scale workloads first, then transition Flux resources from `down` → `warming-up`, then resume them once pods are ready (or `warmupTimeout` elapses)
 
+### Custom Resource Handler
+
+Optional component that turns operator-managed custom resources off during the downscale window (`internal/controller/customresource.go`). When `spec.customResources` is set, for each declared kind the handler:
+
+- **Discovers** matching resources in the schedule's target namespaces, filtered by optional `name` and `matchLabels`
+- **Captures** the current value of every configured field into the `original-fields` annotation, recording whether each field existed at all, then writes the downscale value
+- **Restores** the captured values on upscale, removing fields that did not exist before rather than setting them empty
+- **Waits** in a `warming-up` state until the workloads in the resource's namespace report ready, or `customResourceWarmupTimeout` elapses
+- **Deletes** matching resources instead, when an entry sets `delete: true`, leaving recreation to the owning operator
+
+Field paths are RFC 6901 JSON Pointers with a `*` wildcard for arrays and objects (`internal/controller/jsonpointer.go`), so a single entry can cover every element of, for example, an ECK `spec.nodeSets` array regardless of its length.
+
+Execution brackets workload scaling from the outside, which is what keeps applications from starting against a database that has not finished coming back:
+
+- **Downscale**: turn custom resources off first, then scale workloads
+- **Upscale**: restore custom resources first, hold workloads scaled down until those resources are ready, then scale workloads, then run the ArgoCD and FluxCD warmups
+
+Like the GitOps integrations this uses unstructured objects, so there is no compile-time dependency on any operator and a missing CRD simply yields no matches. RBAC cannot be generated, because the API groups are unknown ahead of time. The `rbac.customResources` Helm value supplies it, rendered into its own ClusterRole.
+
+See the [Custom Resource Integration Guide](custom-resources.md) for per-operator recipes.
+
 FluxCD errors are best-effort, they are logged and emitted as events but never block workload scaling.
 
 See the [FluxCD Integration Guide](fluxcd.md) for usage details.
@@ -209,7 +232,7 @@ Both integrations use Kubernetes unstructured objects instead of importing third
 
 - The operator compiles without any `argoproj.io` or FluxCD dependency
 - It runs normally on clusters without ArgoCD or FluxCD installed, if the CRDs are absent, discovery returns empty and scaling proceeds
-- RBAC permissions are opt-in: `rbac.argocd: true` for ArgoCD, `rbac.fluxcd: true` for FluxCD; both are omitted by default
+- RBAC permissions are opt-in: `rbac.argocd: true` for ArgoCD and `rbac.fluxcd: true` for FluxCD. Both are omitted by default
 - Each feature is independently opt-in via `spec.argoCD` and `spec.fluxCD` respectively
 
 ## Webhooks
@@ -242,4 +265,5 @@ LightsOut exposes Prometheus metrics via the controller-runtime metrics server. 
 | `lightsout_scaling_batches_total`             | Counter   | `schedule`, `direction`                               | Batches processed             |
 | `lightsout_scaling_workloads_processed_total` | Counter   | `schedule`, `direction`, `result`                     | Workloads processed           |
 | `lightsout_scaling_duration_seconds`          | Histogram | `schedule`, `direction`                               | Scaling operation duration    |
+| `lightsout_stuck_terminating_pods`            | Gauge     | `schedule`, `namespace`                               | Pods past their grace period  |
 | `lightsout_last_reconcile_timestamp_seconds`  | Gauge     | `schedule`                                            | Last reconcile timestamp      |

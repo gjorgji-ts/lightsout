@@ -1161,7 +1161,7 @@ func TestReconcile_ArgoCDDisabled(t *testing.T) {
 func TestCalculateRequeueAfter(t *testing.T) {
 	now := time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC)
 
-	// During "Up" period, next transition is downscale; during "Down", it's upscale.
+	// During "Up" the next transition is downscale. During "Down" it is upscale.
 	// For these tests we drive via scaleUp flag and the corresponding field.
 	nextTransition := now.Add(11 * time.Hour) // far away — 11h
 	nearTransition := now.Add(10 * time.Second)
@@ -3705,7 +3705,7 @@ func TestReconcile_SkipsNamespacesWithLocalSchedules(t *testing.T) {
 	_ = batchv1.AddToScheme(scheme)
 	_ = lightsoutv1alpha1.AddToScheme(scheme)
 
-	// Two namespaces; team-a has a LightsOutNamespaceSchedule
+	// Two namespaces. team-a has a LightsOutNamespaceSchedule
 	nsA := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{"env": "dev"}}}
 	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b", Labels: map[string]string{"env": "dev"}}}
 	deploy := &appsv1.Deployment{

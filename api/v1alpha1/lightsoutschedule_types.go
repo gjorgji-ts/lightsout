@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -127,6 +128,82 @@ type FluxCDConfig struct {
 	WarmupTimeout *metav1.Duration `json:"warmupTimeout,omitempty"`
 }
 
+// FieldPatch sets a single field on a custom resource during downscale.
+// The field's previous value is captured so upscale can restore it exactly,
+// which matters for replica counts whose desired value lives in Git rather
+// than in the schedule.
+type FieldPatch struct {
+	// Path is an RFC 6901 JSON Pointer to the field, for example
+	// "/spec/replicas" or "/metadata/annotations/cnpg.io~1hibernation"
+	// ("~1" escapes a literal "/" inside a segment, "~0" a literal "~").
+	//
+	// A "*" segment matches every element of an array or every key of an
+	// object, so "/spec/nodeSets/*/count" targets every node set without
+	// depending on their order.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:Pattern=`^/.*$`
+	Path string `json:"path"`
+
+	// Value is the value written to Path during downscale.
+	// +kubebuilder:validation:Required
+	Value apiextensionsv1.JSON `json:"value"`
+}
+
+// CustomResourceConfig declares how to turn one kind of operator-managed custom
+// resource off during the downscale window.
+//
+// Workloads created by an operator carry a controller owner reference and are
+// skipped by the scaler (see IncludeOwnedWorkloads), because the operator would
+// simply reconcile their replica count back. Turning the operator's own custom
+// resource off is the supported way to stop them.
+type CustomResourceConfig struct {
+	// Group is the API group of the custom resource, for example
+	// "postgresql.cnpg.io". Empty means the core group.
+	// +optional
+	Group string `json:"group,omitempty"`
+
+	// Version is the API version of the custom resource, for example "v1".
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Version string `json:"version"`
+
+	// Kind is the kind of the custom resource, for example "Cluster".
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Kind string `json:"kind"`
+
+	// Name targets a single resource by name. When empty, every resource of
+	// this kind in the schedule's target namespaces is targeted.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// MatchLabels narrows which resources of this kind are targeted.
+	// +optional
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
+
+	// SetFields are applied on downscale and reverted on upscale.
+	// +optional
+	SetFields []FieldPatch `json:"setFields,omitempty"`
+
+	// Delete removes matching resources on downscale instead of patching them,
+	// relying on the owning operator to recreate them on upscale. This exists
+	// for operators that offer no off switch, such as Strimzi, where the
+	// documented way to stop a Kafka cluster is to pause reconciliation and
+	// delete the StrimziPodSet resources.
+	//
+	// Nothing is restored on upscale: recreating the resource is the operator's
+	// job once it resumes reconciling. Entries are processed in declaration
+	// order, so the entry that pauses the operator must come before the entry
+	// that deletes what it manages.
+	//
+	// Only use this for resources the owning operator rebuilds from a durable
+	// spec. Deleting a resource that holds the only copy of its configuration
+	// loses it permanently.
+	// +optional
+	Delete bool `json:"delete,omitempty"`
+}
+
 // LightsOutScheduleCore contains the shared scheduling fields used by both
 // LightsOutSchedule and LightsOutNamespaceSchedule.
 type LightsOutScheduleCore struct {
@@ -159,6 +236,22 @@ type LightsOutScheduleCore struct {
 	// +optional
 	ExcludeLabels *metav1.LabelSelector `json:"excludeLabels,omitempty"`
 
+	// IncludeOwnedWorkloads allows scaling workloads that are controlled by
+	// another controller (they carry a controller owner reference, e.g. a
+	// StatefulSet created by a database operator from its own CRD).
+	//
+	// By default these are skipped: the owning controller reconciles the replica
+	// count back from its custom resource, so lightsout would scale the workload
+	// to zero only to have it restored, while its own annotations make subsequent
+	// reconciles treat it as already scaled down.
+	//
+	// Set this to true only when the owning controller has been paused by other
+	// means (for example an operator-specific pause or suspend annotation), so
+	// nothing will fight the scaling.
+	// +kubebuilder:default=false
+	// +optional
+	IncludeOwnedWorkloads bool `json:"includeOwnedWorkloads,omitempty"`
+
 	// UpscaleRateLimit configures rate limiting when scaling up.
 	// If not set, all workloads are scaled up at once.
 	// +optional
@@ -180,6 +273,23 @@ type LightsOutScheduleCore struct {
 	// When nil (omitted), FluxCD integration is disabled.
 	// +optional
 	FluxCD *FluxCDConfig `json:"fluxCD,omitempty"`
+
+	// CustomResources turns operator-managed custom resources off during the
+	// downscale window and restores them on upscale. Each entry names one kind
+	// and the fields to set on it.
+	//
+	// Custom resources are turned off before workloads are scaled down, and
+	// restored before workloads are scaled up, so databases and message brokers
+	// are on their way back before the applications that depend on them start.
+	// +optional
+	CustomResources []CustomResourceConfig `json:"customResources,omitempty"`
+
+	// CustomResourceWarmupTimeout bounds how long upscale waits for restored
+	// custom resources to report ready before scaling application workloads up
+	// anyway. Only applies when CustomResources is set. Defaults to 10 minutes.
+	// +kubebuilder:default="10m"
+	// +optional
+	CustomResourceWarmupTimeout *metav1.Duration `json:"customResourceWarmupTimeout,omitempty"`
 }
 
 // LightsOutScheduleSpec defines the desired state of LightsOutSchedule
@@ -237,6 +347,14 @@ type LightsOutScheduleStatus struct {
 	// Only present while scaling is in progress.
 	// +optional
 	ScalingProgress *ScalingProgress `json:"scalingProgress,omitempty"`
+
+	// StuckTerminatingPods counts pods that are still running well past their
+	// termination grace period after a downscale. Scaling a workload to zero only
+	// writes the spec, so a pod the kubelet cannot kill keeps its node alive while
+	// this schedule reports Down. A non-zero value means the namespace did not
+	// release the compute it was scaled down to release.
+	// +optional
+	StuckTerminatingPods int `json:"stuckTerminatingPods,omitempty"`
 
 	// Conditions represent the current state of the schedule
 	// +listType=map

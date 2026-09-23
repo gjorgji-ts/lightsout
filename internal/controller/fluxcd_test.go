@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package controller
 
 import (
@@ -6,6 +22,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -498,6 +515,7 @@ func TestResumeFluxResource(t *testing.T) {
 func TestHandleFluxCDWarmup_TransitionsDownToWarmingUp(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
 
 	ks := newFluxKustomization("ks-dev", "flux-system", "dev", map[string]string{
@@ -526,6 +544,7 @@ func TestHandleFluxCDWarmup_TransitionsDownToWarmingUp(t *testing.T) {
 func TestHandleFluxCDWarmup_CompletesWhenPodsReady(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
 	warmingUpSince := now.Add(-2 * time.Minute).UTC().Format(time.RFC3339)
 
@@ -568,6 +587,7 @@ func TestHandleFluxCDWarmup_CompletesWhenPodsReady(t *testing.T) {
 func TestHandleFluxCDWarmup_CompletesOnTimeout(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
 	// warmingUpSince is 15 minutes ago exceeds default 10m timeout
 	warmingUpSince := now.Add(-15 * time.Minute).UTC().Format(time.RFC3339)
@@ -611,6 +631,7 @@ func TestHandleFluxCDWarmup_CompletesOnTimeout(t *testing.T) {
 func TestHandleFluxCDWarmup_DoesNotTagUnmanagedResource(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
 
 	// Resource in the target namespace with no LightsOut labels, never managed by us.
@@ -640,6 +661,7 @@ func TestHandleFluxCDWarmup_DoesNotTagUnmanagedResource(t *testing.T) {
 func TestHandleFluxCDWarmup_DoesNotTagUserSuspendedResource(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
 
 	// Resource pre-suspended by the user (no managed-by label, suspend=true).
@@ -671,6 +693,7 @@ func TestHandleFluxCDWarmup_DoesNotTagUserSuspendedResource(t *testing.T) {
 func TestHandleFluxCDWarmup_CoLocatedUsesOwnNamespace(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
 	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
 	warmingUpSince := now.Add(-2 * time.Minute).UTC().Format(time.RFC3339)
 

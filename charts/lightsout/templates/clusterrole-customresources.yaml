@@ -1,0 +1,46 @@
+{{- if and .Values.rbac.create .Values.rbac.customResources }}
+{{/*
+Permissions for the operator-managed custom resources named in a schedule's
+spec.customResources. These cannot be generated from kubebuilder markers because
+the API groups are not known until a user declares them, so they are supplied
+through values and rendered into their own ClusterRole.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "lightsout.fullname" . }}-customresources
+  labels:
+    {{- include "lightsout.labels" . | nindent 4 }}
+rules:
+  {{- range .Values.rbac.customResources }}
+  - apiGroups:
+      {{- toYaml .apiGroups | nindent 6 }}
+    resources:
+      {{- toYaml .resources | nindent 6 }}
+    verbs:
+      {{- if .verbs }}
+      {{- toYaml .verbs | nindent 6 }}
+      {{- else }}
+      - get
+      - list
+      - watch
+      - update
+      - patch
+      {{- end }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "lightsout.fullname" . }}-customresources
+  labels:
+    {{- include "lightsout.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "lightsout.fullname" . }}-customresources
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "lightsout.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

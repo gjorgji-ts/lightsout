@@ -32,7 +32,7 @@ import (
 
 var _ = Describe("Webhook Validation - LightsOutNamespaceSchedule", Ordered, func() {
 	const (
-		webhookTestNs    = "test-ns-webhook"
+		webhookTestNs     = "test-ns-webhook"
 		scheduleNamespace = "lightsout-system"
 	)
 

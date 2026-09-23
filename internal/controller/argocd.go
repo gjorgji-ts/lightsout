@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package controller
 
 import (
@@ -7,6 +23,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -192,12 +209,16 @@ func LabelArgoCDAppWarmingUp(ctx context.Context, c client.Client, app *unstruct
 	return false, nil
 }
 
-// CheckWorkloadReadiness reports whether all active Deployments and StatefulSets
-// in the given namespace have all their desired replicas ready.
-// Workloads with spec.replicas == 0 are skipped (intentionally at zero).
-// All workloads in the namespace are checked so that the warming-up signal
-// accurately reflects the full health of the namespace, not just the subset
-// lightsout scaled up.
+// CheckWorkloadReadiness reports whether the given namespace is fully up.
+//
+// Deployments and StatefulSets must have every desired replica ready. Those at
+// zero replicas are deliberately down, so they are skipped. Pods that neither
+// owns must report Ready: an operator such as CloudNativePG builds its database
+// from bare Pods, and without this a namespace holding only those reports ready
+// the instant the custom resource is restored.
+//
+// Every workload in the namespace counts, not only the subset lightsout scaled,
+// so the warming-up signal reflects the namespace rather than a slice of it.
 func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace string) (bool, error) {
 	var deployments appsv1.DeploymentList
 	if err := c.List(ctx, &deployments, client.InNamespace(namespace)); err != nil {
@@ -233,7 +254,56 @@ func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace stri
 		}
 	}
 
+	var pods corev1.PodList
+	if err := c.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
+		return false, err
+	}
+	for _, p := range pods.Items {
+		if !podCountsForReadiness(&p) {
+			continue
+		}
+		if !isPodReady(&p) {
+			return false, nil
+		}
+	}
+
 	return true, nil
+}
+
+// podCountsForReadiness reports whether a pod's readiness says anything about the
+// namespace being back up.
+//
+// ReplicaSet and StatefulSet pods are already covered by the replica counts above.
+// Job pods run to completion and never report Ready, so waiting on one would burn
+// the whole warmup timeout. Finished and deleting pods are on their way out.
+// Everything left is owned by an operator directly, and it counts.
+func podCountsForReadiness(pod *corev1.Pod) bool {
+	if pod.DeletionTimestamp != nil {
+		return false
+	}
+	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+		return false
+	}
+	owner := metav1.GetControllerOf(pod)
+	if owner == nil {
+		return true
+	}
+	switch owner.Kind {
+	case "ReplicaSet", "StatefulSet", "Job":
+		return false
+	default:
+		return true
+	}
+}
+
+// isPodReady reports whether a pod carries a Ready condition set to True.
+func isPodReady(pod *corev1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // labelArgoCDAppsDown discovers and labels ArgoCD apps in namespaces as down.
@@ -314,7 +384,8 @@ func handleArgoCDWarmup(
 			stillWarmingUp = true
 
 		case constants.StateWarmingUp:
-			// Determine when warming-up started; fall back to now if annotation is missing/invalid
+			// Determine when warming-up started. Fall back to now when the
+			// annotation is missing or malformed.
 			warmingUpSince := now
 			annotations := app.GetAnnotations()
 			if ts, ok := annotations[constants.WarmingUpSinceAnnotation]; ok {

@@ -1,3 +1,19 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 // internal/constants/annotations.go
 package constants
 
@@ -18,6 +34,11 @@ const (
 	// spec.behavior.scaleUp.selectPolicy value before LightsOut sets it to "Disabled"
 	// during downscale. Empty string means the field was absent (default behaviour).
 	OriginalHPAScaleUpPolicyAnnotation = AnnotationPrefix + "original-hpa-scale-up-policy"
+
+	// OriginalFieldsAnnotation stores the JSON-encoded original values of the fields
+	// LightsOut overwrote on a custom resource during downscale, keyed by the concrete
+	// JSON Pointer of each field, so upscale can restore them exactly.
+	OriginalFieldsAnnotation = AnnotationPrefix + "original-fields"
 
 	// ManagedByAnnotation stores the name of the Schedule managing this workload
 	ManagedByAnnotation = AnnotationPrefix + "managed-by"
@@ -75,6 +96,10 @@ const (
 
 	// EventReasonScaledDown is the Kubernetes event reason string when workloads are scaled down
 	EventReasonScaledDown = "ScaledDown"
+
+	// EventReasonPodsStuckTerminating is the Kubernetes event reason string when
+	// pods outlive their termination grace period after a downscale
+	EventReasonPodsStuckTerminating = "PodsStuckTerminating"
 
 	// ConditionTypeReady is the status condition type reported on schedules after reconcile
 	ConditionTypeReady = "Ready"

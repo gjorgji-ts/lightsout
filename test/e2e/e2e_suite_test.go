@@ -44,6 +44,13 @@ var (
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
 	projectImage = "techsupport.mk/lightsout:v0.0.1"
+
+	// E2E_REUSE=true leaves cert-manager, the CRDs and the controller deployed when
+	// the suite finishes, and redeploys the controller in place on the next run
+	// instead of installing everything from scratch. Setup and teardown cost roughly
+	// 70-110s per invocation, which dominates when iterating on a single operator
+	// case. The cluster still goes away with `make cleanup-test-e2e`.
+	reuseDeployment = os.Getenv("E2E_REUSE") == "true"
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -104,6 +111,15 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 
+	// A reused deployment keeps the old pod, which still runs the previously loaded
+	// image under the same tag. Restart it so the freshly built image takes effect.
+	if reuseDeployment {
+		By("restarting the controller to pick up the rebuilt image")
+		cmd = exec.Command("kubectl", "rollout", "restart",
+			"deployment/lightsout-controller-manager", "-n", namespace)
+		_, _ = utils.Run(cmd)
+	}
+
 	By("waiting for controller rollout to complete")
 	Eventually(func(g Gomega) {
 		cmd := exec.Command("kubectl", "get", "deployment", "lightsout-controller-manager",
@@ -124,6 +140,13 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	if reuseDeployment {
+		_, _ = fmt.Fprintf(GinkgoWriter,
+			"E2E_REUSE=true: leaving cert-manager, CRDs and the controller in place.\n"+
+				"Run `make cleanup-test-e2e` to tear the cluster down.\n")
+		return
+	}
+
 	By("undeploying the controller-manager")
 	cmd := exec.Command("make", "undeploy")
 	_, _ = utils.Run(cmd)
