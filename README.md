@@ -34,6 +34,7 @@ When business hours resume, LightsOut restores workloads to their original repli
 - **Admission webhooks** - validates schedules and detects overlaps before they're applied
 - **ArgoCD integration** - optional labeling of ArgoCD Application CRDs to prevent false alerts during downscale
 - **FluxCD integration** - optional suspension of FluxCD Kustomization and HelmRelease resources to prevent drift detection and alert noise during downscale
+- **Operator-managed custom resources** - hibernate databases, brokers and search clusters through their own CRs, restoring the exact values on upscale, with applications held back until the data services are ready
 - **Prometheus metrics** - observe schedule state, scaling operations, errors, and durations
 
 ## Quick Start
@@ -103,10 +104,13 @@ Managed by platform teams. Targets workloads across one or more namespaces.
 | `suspend` | bool | No | Pause all operations (default: `false`) |
 | `workloadTypes` | []string | No | Filter by type: `Deployment`, `StatefulSet`, `CronJob` |
 | `excludeLabels` | LabelSelector | No | Skip workloads matching these labels |
+| `includeOwnedWorkloads` | bool | No | Scale workloads owned by another controller (default: `false`) |
 | `upscaleRateLimit` | RateLimitConfig | No | Rate limit upscale operations |
 | `downscaleRateLimit` | RateLimitConfig | No | Rate limit downscale operations |
 | `argoCD` | ArgoCDConfig | No | Enable [ArgoCD integration](docs/argocd.md) |
 | `fluxCD` | FluxCDConfig | No | Enable [FluxCD integration](docs/fluxcd.md) |
+| `customResources` | []CustomResourceConfig | No | Turn operator-managed CRs off ([guide](docs/custom-resources.md)) |
+| `customResourceWarmupTimeout` | Duration | No | Cap on the upscale readiness wait (default: `10m`) |
 
 At least one of `namespaceSelector` or `namespaces` must be specified.
 
@@ -140,6 +144,32 @@ spec:
 ```
 
 Any workloads with matching labels will be skipped during scaling operations.
+
+### Operator-Managed Workloads
+
+Workloads carrying a controller owner reference are skipped by default. These are created by another operator from its own custom resource, such as a StatefulSet built by a database operator. The owning controller reconciles their replica count, so scaling them to zero only makes it restore them. LightsOut's own annotations then make later reconciles treat them as already scaled down.
+
+Turn the operator's own custom resource off instead, which is what `spec.customResources` does. The [Custom Resource Integration guide](docs/custom-resources.md) carries ready-made stanzas for RabbitMQ, ClickHouse, CloudNativePG, ECK, Keycloak, StarRocks, MariaDB, Redis and Strimzi:
+
+```yaml
+spec:
+  customResources:
+    - group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      setFields:
+        - path: /metadata/annotations/cnpg.io~1hibernation
+          value: "on"
+```
+
+Some operators have no field that reaches zero and must instead be told to stop reconciling, leaving LightsOut to scale the workloads itself. Those need both a `customResources` entry for the pause switch and:
+
+```yaml
+spec:
+  includeOwnedWorkloads: true
+```
+
+Without pausing the owning controller, enabling this on its own will not keep the workloads scaled down.
 
 ### Rate Limiting
 
@@ -192,20 +222,24 @@ LightsOut exposes Prometheus metrics on the metrics endpoint:
 | `lightsout_scaling_batches_total` | Counter | Batches processed during scaling |
 | `lightsout_scaling_workloads_processed_total` | Counter | Workloads processed with success/failure result |
 | `lightsout_scaling_duration_seconds` | Histogram | Time taken for scaling operations |
+| `lightsout_stuck_terminating_pods` | Gauge | Pods still running past their grace period after a downscale, by schedule and namespace |
 | `lightsout_last_reconcile_timestamp_seconds` | Gauge | Unix timestamp of last reconciliation |
 
 Scaling events are also recorded as Kubernetes Events on the `LightsOutSchedule` and `LightsOutNamespaceSchedule` resources.
 
 ## Using with Karpenter
 
-LightsOut is designed to work seamlessly with [Karpenter](https://karpenter.sh/) to achieve maximum cost savings. There’s no need for any special configuration, the two systems automatically complement each other.
+[Karpenter](https://karpenter.sh/) needs no special configuration here. The two tools divide the work:
 
-- **LightsOut** monitors cron schedules and scales workloads to zero during off-hours.
-- **Karpenter** monitors node utilization and removes nodes that are no longer needed.
+- **LightsOut** reads cron schedules and scales workloads to zero during off-hours.
+- **Karpenter** watches node utilization and removes nodes nothing needs.
 
-As long as Karpenter’s `NodePool` consolidation policy is enabled (the default setting), empty nodes are drained and terminated within minutes of LightsOut scaling workloads down.
+Karpenter drains and terminates the empty nodes within minutes of a downscale, as long as its `NodePool` consolidation policy is on. That is the default.
 
-This approach also works with [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler). Any node autoscaler that deprovisions underutilized nodes will produce the same effect.
+> [!IMPORTANT]
+> The node autoscaler is what saves the money. Scaling a workload to zero frees no compute on its own, because the node keeps running and keeps billing. Pair LightsOut with an autoscaler that deprovisions, or the schedule changes nothing on your invoice.
+
+[Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler) works the same way, as does any node autoscaler that deprovisions underused nodes.
 
 ## Documentation
 
@@ -213,6 +247,7 @@ This approach also works with [Cluster Autoscaler](https://github.com/kubernetes
 - [HPA Integration](docs/hpa.md) - automatic HorizontalPodAutoscaler handling
 - [ArgoCD Integration](docs/argocd.md) - prevent false alerts when scaling down
 - [FluxCD Integration](docs/fluxcd.md) - prevent drift detection when scaling down
+- [Custom Resource Integration](docs/custom-resources.md) - hibernate operator-managed databases and brokers, with per-operator recipes
 - [Setup Guide](docs/setup-guide.md) - installation with and without webhooks
 - [Security Model](docs/security-model.md) - RBAC, risks, and mitigations
 - [Examples](examples/) - sample schedule configurations
