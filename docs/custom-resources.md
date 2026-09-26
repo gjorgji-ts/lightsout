@@ -205,6 +205,13 @@ If your object storage runs in-cluster, exclude it with `excludeLabels`. It is a
 
 This needs `includeOwnedWorkloads: true` on the schedule, so the scaler zeroes the StatefulSet once the operator stops reconciling it.
 
+A suspended `MariaDB` reports unhealthy, so an ArgoCD Application that contains one reports `Degraded` for the whole window. Add the ArgoCD annotation as a second `setField`, and LightsOut applies and removes it with the downscale:
+
+```yaml
+    - path: /metadata/annotations/argocd.argoproj.io~1ignore-healthcheck
+      value: "true"
+```
+
 ### Redis (OpsTree)
 
 The RedisCluster webhook rejects `clusterSize` below 3, so the size field is not a route to zero. Each kind has its own skip-reconcile annotation, gated on the literal string `"true"`.
@@ -240,6 +247,15 @@ For Strimzi 1.x:
 ```
 
 Order matters, and it is the declaration order. The pause entry must come before the delete entry, or the operator recreates the pod set immediately. Upscale restores nothing for a `delete` entry. Removing the pause annotation is what makes Strimzi rebuild the pod set from the `Kafka` spec.
+
+A paused `Kafka` with no pod set reports unhealthy for the whole window. As with MariaDB, add the ArgoCD annotation to the `setFields` of the `Kafka` entry:
+
+```yaml
+    - path: /metadata/annotations/argocd.argoproj.io~1ignore-healthcheck
+      value: "true"
+```
+
+This changes the health result only. A Sync hook that needs the paused Kafka still blocks, because ArgoCD waits for hook completion and not for health. For more information, see [Suppressing the Degraded Health Status](argocd.md#suppressing-the-degraded-health-status).
 
 > [!CAUTION]
 > `delete: true` is the one destructive primitive here. Use it only for resources an operator rebuilds from a durable spec. Deleting a resource that holds the only copy of its own configuration loses it permanently.

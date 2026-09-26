@@ -107,8 +107,6 @@ func PatchHPAForDownscale(ctx context.Context, c client.Client, hpaList *unstruc
 		return nil
 	}
 
-	orig := hpa.DeepCopy()
-
 	annotations := hpa.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
@@ -136,16 +134,15 @@ func PatchHPAForDownscale(ctx context.Context, c client.Client, hpaList *unstruc
 		return nil
 	}
 
-	// Store original policy value (empty string = field was absent, i.e. default behaviour)
-	annotations[constants.OriginalHPAScaleUpPolicyAnnotation] = currentPolicy
-	annotations[constants.ManagedByAnnotation] = scheduleName
-	hpa.SetAnnotations(annotations)
-
-	if err := unstructured.SetNestedField(hpa.Object, hpaScaleUpDisabled, "spec", "behavior", "scaleUp", "selectPolicy"); err != nil {
-		return err
-	}
-
-	if err := c.Patch(ctx, hpa, client.MergeFrom(orig)); err != nil {
+	// The original policy value is stored as an annotation. An empty string records
+	// that the field was absent, which is not the same as a field set to "".
+	if err := applyMergePatch(ctx, c, hpa, objectPatch{
+		SetAnnotations: map[string]string{
+			constants.OriginalHPAScaleUpPolicyAnnotation: currentPolicy,
+			constants.ManagedByAnnotation:                scheduleName,
+		},
+		Spec: scaleUpPolicySpec(hpaScaleUpDisabled),
+	}); err != nil {
 		return err
 	}
 
@@ -166,8 +163,6 @@ func RestoreHPA(ctx context.Context, c client.Client, hpaList *unstructured.Unst
 	if hpa == nil {
 		return nil
 	}
-
-	orig := hpa.DeepCopy()
 
 	annotations := hpa.GetAnnotations()
 	if annotations == nil {
@@ -193,23 +188,33 @@ func RestoreHPA(ctx context.Context, c client.Client, hpaList *unstructured.Unst
 		return nil
 	}
 
-	if origPolicy == "" {
-		// Field was absent originally - remove selectPolicy so the HPA returns to default
-		unstructured.RemoveNestedField(hpa.Object, "spec", "behavior", "scaleUp", "selectPolicy")
-	} else {
-		if err := unstructured.SetNestedField(hpa.Object, origPolicy, "spec", "behavior", "scaleUp", "selectPolicy"); err != nil {
-			return err
-		}
+	// An empty annotation means the field was absent before the downscale, so a nil
+	// value removes it again and the HPA returns to the default policy.
+	var policy any
+	if origPolicy != "" {
+		policy = origPolicy
 	}
 
-	delete(annotations, constants.OriginalHPAScaleUpPolicyAnnotation)
-	delete(annotations, constants.ManagedByAnnotation)
-	hpa.SetAnnotations(annotations)
-
-	if err := c.Patch(ctx, hpa, client.MergeFrom(orig)); err != nil {
+	if err := applyMergePatch(ctx, c, hpa, objectPatch{
+		RemoveAnnotations: []string{
+			constants.OriginalHPAScaleUpPolicyAnnotation,
+			constants.ManagedByAnnotation,
+		},
+		Spec: scaleUpPolicySpec(policy),
+	}); err != nil {
 		return err
 	}
 
 	logger.Info("restored HPA scaleUp policy", "restoredTo", origPolicy)
 	return nil
+}
+
+// scaleUpPolicySpec builds the spec fragment addressing
+// spec.behavior.scaleUp.selectPolicy. A nil policy removes the field.
+func scaleUpPolicySpec(policy any) map[string]any {
+	return map[string]any{
+		"behavior": map[string]any{
+			"scaleUp": map[string]any{"selectPolicy": policy},
+		},
+	}
 }

@@ -56,35 +56,80 @@ resource.customizations.ignoreDifferences.apps_Deployment: |
   jsonPointers:
     - /spec/replicas
     - /metadata/annotations/lightsout.techsupport.mk~1original-replicas
+    - /metadata/annotations/lightsout.techsupport.mk~1managed-by
     - /metadata/labels/lightsout.techsupport.mk~1managed-by
 
 resource.customizations.ignoreDifferences.apps_StatefulSet: |
   jsonPointers:
     - /spec/replicas
     - /metadata/annotations/lightsout.techsupport.mk~1original-replicas
+    - /metadata/annotations/lightsout.techsupport.mk~1managed-by
     - /metadata/labels/lightsout.techsupport.mk~1managed-by
 
 resource.customizations.ignoreDifferences.batch_CronJob: |
   jsonPointers:
     - /spec/suspend
     - /metadata/annotations/lightsout.techsupport.mk~1original-suspend
+    - /metadata/annotations/lightsout.techsupport.mk~1managed-by
     - /metadata/labels/lightsout.techsupport.mk~1managed-by
 ```
 
 > **Note:** `~1` is the JSON Pointer (RFC 6901) escape for `/` in key names.
 
+`managed-by` appears twice in each list. LightsOut writes this key as a label and as an annotation on every workload it manages. These are two different metadata fields, so each one needs its own pointer. If you ignore only the label, the annotation still shows as drift.
+
+Add the HPA kind if a HorizontalPodAutoscaler targets any of your workloads. During downscale, LightsOut sets `spec.behavior.scaleUp.selectPolicy` to `Disabled` and records the previous value in an annotation. For more information, see [HPA integration](hpa.md).
+
+```yaml
+resource.customizations.ignoreDifferences.autoscaling_HorizontalPodAutoscaler: |
+  jsonPointers:
+    - /spec/behavior/scaleUp/selectPolicy
+    - /metadata/annotations/lightsout.techsupport.mk~1original-hpa-scale-up-policy
+    - /metadata/annotations/lightsout.techsupport.mk~1managed-by
+```
+
+Without this entry, ArgoCD restores `selectPolicy` during the downscale. The HPA then returns the workload to its original replica count, and the schedule still reports success.
+
 ### `ignoreDifferences` for Application CRDs (App-of-Apps)
 
-If your ArgoCD Applications are themselves managed by ArgoCD (app-of-apps pattern), the labels LightsOut adds to Application CRDs are also drift from Git's perspective. Add:
+If your ArgoCD Applications are themselves managed by ArgoCD (app-of-apps pattern), the metadata LightsOut adds to Application CRDs is also drift from Git's perspective. Add:
 
 ```yaml
 resource.customizations.ignoreDifferences.argoproj.io_Application: |
   jsonPointers:
     - /metadata/labels/lightsout.techsupport.mk~1state
     - /metadata/labels/lightsout.techsupport.mk~1managed-by
+    - /metadata/annotations/lightsout.techsupport.mk~1warming-up-since
 ```
 
+LightsOut writes the `warming-up-since` annotation on every upscale and removes it when warmup completes. Without the third pointer, the parent Application reports OutOfSync for the length of each warmup window.
+
 This is only needed if Applications are managed declaratively through Git. If you create Applications manually or they are not part of an app-of-apps hierarchy, you can skip this.
+
+### Suppressing the Degraded Health Status
+
+`ignoreDifferences` covers sync status only. ArgoCD still runs its health check against a paused custom resource and reports the parent Application as `Degraded`. The LightsOut labels stop the notifications, but the UI still shows the Application as unhealthy.
+
+Add the ArgoCD annotation as an extra `setField` on the affected kinds. LightsOut then applies and removes it with the downscale:
+
+```yaml
+customResources:
+  - group: k8s.mariadb.com
+    version: v1alpha1
+    kind: MariaDB
+    setFields:
+      - path: /spec/suspend
+        value: true
+      - path: /metadata/annotations/argocd.argoproj.io~1ignore-healthcheck
+        value: "true"
+```
+
+LightsOut treats this annotation as any other captured field. The annotation is absent before the downscale and absent again after the upscale. Add the same pointer to the `ignoreDifferences` list for that kind.
+
+Do not use `resource.customizations.health.<group>_<kind>` with a Lua script that returns `Healthy` for LightsOut-labelled resources. That customization changes the health result for every resource of that kind in the cluster, including the resources that must still report `Degraded`. The annotation above applies only to the resources LightsOut turned off.
+
+> [!WARNING]
+> This annotation changes health reporting only. ArgoCD waits for hook completion, not for health, so `ignore-healthcheck` has no effect on hooks. A PreSync or Sync hook that needs a downscaled datastore blocks until the upscale. A Keycloak realm-import Job is the common case, because `instances: 0` removes the Keycloak that the Job needs. Exclude these hooks from downscaled namespaces, or do not sync those Applications during the downscale window.
 
 ### `RespectIgnoreDifferences` Sync Option
 

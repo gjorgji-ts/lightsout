@@ -918,3 +918,127 @@ func TestScaleDeploymentUp_HPACrashWindowRecovery(t *testing.T) {
 		t.Error("expected original-hpa-scale-up-policy annotation removed from HPA after crash recovery")
 	}
 }
+
+// An operator changes the resourceVersion of the workloads it owns continuously.
+// The copy the scaler holds comes from a List, so it is often stale when it writes.
+// Update rejects a stale copy. A merge patch carries no resourceVersion and cannot
+// conflict.
+func TestScaleDeployment_StaleCopyStillScales(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "owned-app", Namespace: "ns"},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
+	ctx := context.Background()
+
+	// The scaler's copy, as it would come back from a List.
+	stale := &appsv1.Deployment{}
+	if err := fakeClient.Get(ctx, client.ObjectKey{Namespace: "ns", Name: "owned-app"}, stale); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	// The owning operator writes to the object, bumping resourceVersion behind us.
+	current := &appsv1.Deployment{}
+	if err := fakeClient.Get(ctx, client.ObjectKey{Namespace: "ns", Name: "owned-app"}, current); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	current.Labels = map[string]string{"operator-touched": "yes"}
+	if err := fakeClient.Update(ctx, current); err != nil {
+		t.Fatalf("operator update: %v", err)
+	}
+
+	if _, err := ScaleDeployment(ctx, fakeClient, stale, "dev-schedule", false, nil); err != nil {
+		t.Fatalf("downscale with a stale copy must not conflict, got: %v", err)
+	}
+
+	got := &appsv1.Deployment{}
+	if err := fakeClient.Get(ctx, client.ObjectKey{Namespace: "ns", Name: "owned-app"}, got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != 0 {
+		t.Errorf("replicas = %v, want 0", got.Spec.Replicas)
+	}
+	if got.Annotations[constants.OriginalReplicasAnnotation] != "3" {
+		t.Errorf("original-replicas = %q, want \"3\"", got.Annotations[constants.OriginalReplicasAnnotation])
+	}
+	// The concurrent write must survive: a merge patch only sends what changed.
+	if got.Labels["operator-touched"] != "yes" {
+		t.Error("patch clobbered the operator's concurrent write")
+	}
+}
+
+// bumpResourceVersion simulates the owning operator writing to obj between the List
+// that produced the caller's copy and the caller's own write. Pass a freshly fetched
+// object: the copy held by the code under test is the one that goes stale.
+func bumpResourceVersion(t *testing.T, c client.Client, obj client.Object) {
+	t.Helper()
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels["operator-touched"] = "yes"
+	obj.SetLabels(labels)
+	if err := c.Update(context.Background(), obj); err != nil {
+		t.Fatalf("simulated operator write: %v", err)
+	}
+}
+
+// Upscale removes metadata rather than adding it. A merge patch expresses a removal
+// as an explicit null, so the delete path can fail in ways the downscale path cannot.
+func TestScaleDeploymentUp_StaleCopyClearsMetadata(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web",
+			Namespace: "ns",
+			Annotations: map[string]string{
+				constants.OriginalReplicasAnnotation: "3",
+				constants.ManagedByAnnotation:        "dev-schedule",
+			},
+			Labels: map[string]string{constants.ManagedByLabel: "dev-schedule"},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: "ns", Name: "web"}
+
+	stale := &appsv1.Deployment{}
+	if err := fakeClient.Get(ctx, key, stale); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	fresh := &appsv1.Deployment{}
+	if err := fakeClient.Get(ctx, key, fresh); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	bumpResourceVersion(t, fakeClient, fresh)
+
+	if _, err := ScaleDeployment(ctx, fakeClient, stale, "dev-schedule", true, nil); err != nil {
+		t.Fatalf("upscale with a stale copy must not conflict, got: %v", err)
+	}
+
+	got := &appsv1.Deployment{}
+	if err := fakeClient.Get(ctx, key, got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != 3 {
+		t.Errorf("replicas = %v, want 3", got.Spec.Replicas)
+	}
+	if _, ok := got.Annotations[constants.OriginalReplicasAnnotation]; ok {
+		t.Error("original-replicas annotation survived the patch")
+	}
+	if _, ok := got.Annotations[constants.ManagedByAnnotation]; ok {
+		t.Error("managed-by annotation survived the patch")
+	}
+	if _, ok := got.Labels[constants.ManagedByLabel]; ok {
+		t.Error("managed-by label survived the patch")
+	}
+	if got.Labels["operator-touched"] != "yes" {
+		t.Error("patch clobbered the operator's concurrent write")
+	}
+}

@@ -723,3 +723,97 @@ func TestHandleFluxCDWarmup_CoLocatedUsesOwnNamespace(t *testing.T) {
 		t.Errorf("expected stillWarmingUp = false: co-located resource should use own namespace for readiness check")
 	}
 }
+
+// Flux rewrites Kustomization status on every reconcile, so the copy in hand is often
+// stale. Suspending adds labels and removes the warming-up annotation in one write,
+// which exercises both halves of the patch.
+func TestSuspendFluxResource_StaleCopyStillSuspends(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	ks := newFluxKustomization("ks-dev", "flux-system", "dev", nil, false)
+	ks.SetAnnotations(map[string]string{constants.WarmingUpSinceAnnotation: "2026-03-21T08:00:00Z"})
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ks).Build()
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: "flux-system", Name: "ks-dev"}
+
+	get := func() *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization",
+		})
+		if err := fakeClient.Get(ctx, key, u); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return u
+	}
+
+	stale := get()
+	bumpResourceVersion(t, fakeClient, get())
+
+	if _, err := SuspendFluxResource(ctx, fakeClient, stale, "dev-schedule"); err != nil {
+		t.Fatalf("suspending a stale Flux resource must not conflict, got: %v", err)
+	}
+
+	got := get()
+	suspended, _, _ := unstructured.NestedBool(got.Object, "spec", "suspend")
+	if !suspended {
+		t.Error("spec.suspend = false, want true")
+	}
+	if got.GetLabels()[constants.StateLabel] != constants.StateDown {
+		t.Errorf("state = %q, want down", got.GetLabels()[constants.StateLabel])
+	}
+	if _, ok := got.GetAnnotations()[constants.WarmingUpSinceAnnotation]; ok {
+		t.Error("warming-up-since annotation survived")
+	}
+	if got.GetLabels()["operator-touched"] != "yes" {
+		t.Error("patch clobbered Flux's concurrent write")
+	}
+}
+
+// Resuming removes every label LightsOut owns. If that emptied the map in the copy in
+// hand, a diffed patch would delete the whole map on the server.
+func TestResumeFluxResource_StaleCopyKeepsForeignMetadata(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	ks := newFluxKustomization("ks-dev", "flux-system", "dev", map[string]string{
+		constants.ManagedByLabel: "dev-schedule",
+		constants.StateLabel:     constants.StateDown,
+	}, true)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ks).Build()
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: "flux-system", Name: "ks-dev"}
+
+	get := func() *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization",
+		})
+		if err := fakeClient.Get(ctx, key, u); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return u
+	}
+
+	stale := get()
+	bumpResourceVersion(t, fakeClient, get())
+
+	if _, err := ResumeFluxResource(ctx, fakeClient, stale, "dev-schedule"); err != nil {
+		t.Fatalf("resuming a stale Flux resource must not conflict, got: %v", err)
+	}
+
+	got := get()
+	suspended, _, _ := unstructured.NestedBool(got.Object, "spec", "suspend")
+	if suspended {
+		t.Error("spec.suspend = true, want false")
+	}
+	if _, ok := got.GetLabels()[constants.ManagedByLabel]; ok {
+		t.Error("managed-by label survived")
+	}
+	if got.GetLabels()["operator-touched"] != "yes" {
+		t.Error("removing our labels deleted the whole label map")
+	}
+}
