@@ -1,42 +1,40 @@
 # Architecture
 
-LightsOut is a Kubernetes operator built with [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime). It watches custom `LightsOutSchedule` resources and automatically scales workloads up or down based on cron schedules.
+LightsOut is a Kubernetes operator built with [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime). It watches schedule resources and scales workloads up or down against cron expressions.
 
-This document explains how the system works internally.
+This document describes the internals.
 
-## Where LightsOut Fits
+## Where LightsOut fits
 
-Kubernetes cost optimization has two layers:
+Cost optimisation on Kubernetes has two layers:
 
 ```mermaid
 flowchart TD
-    LO["<b>Workload Layer - LightsOut</b><br/>Scales Deployments, StatefulSets, CronJobs<br/>to zero during off-hours"]
-    K["<b>Node Layer - Karpenter / Cluster Autoscaler</b><br/>Detects empty nodes and deprovisions them"]
-    C["<b>Cloud Provider</b><br/>No nodes → no compute charges"]
+    LO["<b>Workload layer - LightsOut</b><br/>Scales Deployments, StatefulSets, CronJobs<br/>to zero outside business hours"]
+    K["<b>Node layer - Karpenter / Cluster Autoscaler</b><br/>Finds empty nodes and removes them"]
+    C["<b>Cloud provider</b><br/>No nodes, no compute charges"]
 
-    LO -->|"nodes become idle"| K
-    K -->|"nodes terminated"| C
+    LO -->|"nodes go idle"| K
+    K -->|"nodes removed"| C
 ```
 
-LightsOut operates at the **workload layer**, scaling pods to zero to free up node resources. A node autoscaler like [Karpenter](https://karpenter.sh/) operates at the **node layer**, detecting idle nodes and removing them. Together, these processes convert idle off-hours into direct cost savings, typically over 60% for development and staging clusters that are only used during business hours.
+LightsOut works at the workload layer. It scales pods to zero, which frees the node. A node autoscaler works at the node layer, and removes the node that nothing needs.
 
-LightsOut does not directly manage nodes. Any node autoscaler that deprovisions underutilized nodes will work with LightsOut.
+The saving comes from the node layer. LightsOut never touches nodes, and it works with any autoscaler that deprovisions them.
 
-## Overview
+## The reconcile loop
 
-A Kubernetes operator is a controller that extends the Kubernetes API with custom resources (CRDs) and reconciliation logic. Instead of running imperative scripts on a timer, you declare your desired scaling schedule as a `LightsOutSchedule` resource, and the operator continuously ensures the cluster matches that intent.
+You declare the schedule as a resource, and the controller keeps the cluster matching it:
 
-The core loop is:
+1. A user creates a `LightsOutSchedule` or a `LightsOutNamespaceSchedule`.
+2. The controller sees the change and reconciles.
+3. It decides whether the current time falls in the up period or the down period.
+4. It resolves the namespaces and workloads in scope.
+5. It scales them, and records the original state in annotations.
+6. It writes the current state and the next transition times to the status.
+7. It requeues itself for the next transition, or sooner if a batch is still in progress.
 
-1. User creates a `LightsOutSchedule` or `LightsOutNamespaceSchedule` CR
-2. The controller detects the change and runs its reconciliation logic
-3. It calculates whether the current time falls in an "up" or "down" period
-4. It discovers which namespaces and workloads are in scope
-5. It scales workloads accordingly, storing original state in annotations
-6. It updates the schedule's status with current state and next transition times
-7. It re-queues itself to reconcile again at the next transition time (or sooner if rate-limited batch processing is in progress)
-
-## Component Map
+## Component map
 
 ```mermaid
 flowchart TD
@@ -49,15 +47,18 @@ flowchart TD
     ND -->|"candidate namespaces"| NF
     NF -->|"filtered namespaces"| R
     NSR --> PC
+    R --> CRH["Custom Resource Handler<br/>(optional)"]
+    NSR --> CRH
     R --> AL["ArgoCD Labeler<br/>(optional)"]
     NSR --> AL
     R --> FL["FluxCD Suspender<br/>(optional)"]
     NSR --> FL
     R --> WS["Workload Scaler<br/>(budget-based rate limiting)"]
     NSR --> WS
-    AL -->|"label/unlabel apps"| ArgoCD["ArgoCD Application CRDs"]
+    CRH -->|"set/restore fields"| Ops["Operator CRs<br/>(databases, brokers)"]
+    AL -->|"label/unlabel"| ArgoCD["ArgoCD Application CRDs"]
     FL -->|"suspend/resume"| Flux["FluxCD Kustomizations<br/>& HelmReleases"]
-    WS -->|"scale operations"| K8s["Kubernetes API<br/>(Deployments, StatefulSets, CronJobs)"]
+    WS -->|"scale"| K8s["Kubernetes API<br/>(Deployments, StatefulSets, CronJobs)"]
     WS -->|"store/restore state"| Ann["Annotations<br/>original-replicas<br/>managed-by"]
     R -->|"emit"| Ev["Kubernetes Events"]
     NSR -->|"emit"| Ev
@@ -71,199 +72,212 @@ flowchart TD
 
 ### Reconcilers
 
-LightsOut runs two reconcilers in the same operator process.
+Two reconcilers run in the same process.
 
-**`LightsOutScheduleReconciler`** (`internal/controller/lightsoutschedule_controller.go`) - the cluster-scoped reconciler. On each reconciliation cycle it:
+`LightsOutScheduleReconciler` (`internal/controller/lightsoutschedule_controller.go`) is cluster-scoped. On each cycle it:
 
-- Reads the `LightsOutSchedule` spec
-- Delegates to the Period Calculator to determine current state
-- Delegates to Namespace Discovery to find candidate namespaces
-- Filters out any namespace that already has a `LightsOutNamespaceSchedule` (namespace-scoped schedules take precedence)
-- Collects workloads (Deployments, StatefulSets, CronJobs) across the remaining namespaces
-- Filters out excluded workloads via `excludeLabels`
-- Filters out workloads controlled by another controller, unless `includeOwnedWorkloads` is set
-- If ArgoCD integration is enabled, labels/unlabels ArgoCD Application CRDs (ordered relative to scaling)
-- If FluxCD integration is enabled, suspends/resumes FluxCD Kustomization and HelmRelease resources (ordered relative to scaling)
-- Delegates to the Workload Scaler for actual scaling (with budget-based rate limiting when configured)
-- Updates the schedule's status and conditions
-- Re-queues for the next transition time, or sooner if a batch limit was reached
+- Reads the spec
+- Asks the period calculator for the current state
+- Asks namespace discovery for the candidate namespaces
+- Drops any namespace that holds a `LightsOutNamespaceSchedule`, because the local schedule wins
+- Collects the Deployments, StatefulSets and CronJobs in what remains
+- Drops workloads that match `excludeLabels`
+- Drops workloads owned by another controller, unless `includeOwnedWorkloads` is set
+- Runs the optional custom resource, ArgoCD and FluxCD steps, in the order each section below describes
+- Hands the workloads to the scaler, with rate limiting when configured
+- Writes the status and conditions
+- Requeues for the next transition, or sooner when a batch limit stopped it early
 
-**`LightsOutNamespaceScheduleReconciler`** (`internal/controller/lightsoutnamespaceschedule_controller.go`) - the namespace-scoped reconciler. It follows the same reconciliation flow but always operates on exactly one namespace: the namespace the `LightsOutNamespaceSchedule` resource lives in. No namespace discovery step is needed.
+`LightsOutNamespaceScheduleReconciler` (`internal/controller/lightsoutnamespaceschedule_controller.go`) is namespace-scoped. It follows the same flow against exactly one namespace, the one its resource lives in, so it needs no discovery step.
 
-A finalizer (`lightsout.techsupport.mk/cleanup`) on both resource types ensures that when a schedule is deleted, all managed workloads are restored to their original state before the resource is removed.
+Both types carry a `lightsout.techsupport.mk/cleanup` finalizer. Deleting a schedule restores everything it manages before the resource goes away.
 
-### Period Calculator
+### Period calculator
 
-Determines the current scaling state (`internal/controller/period.go`). Given the `upscale` and `downscale` cron expressions plus a timezone, it calculates:
+`internal/controller/period.go` takes the two cron expressions and a timezone, and returns:
 
-- Whether the current moment is in an "up" or "down" period
-- When the next upscale and downscale transitions will occur
+- Whether the current moment is up or down
+- When the next upscale and the next downscale happen
 
-It uses adaptive search windows based on cron frequency to efficiently find the next matching times, and caches results to avoid redundant computation.
+It sizes its search window from the cron frequency, and caches the result until the next transition.
 
-### Namespace Discovery
+### Namespace discovery
 
-Resolves which namespaces are in scope (`internal/controller/namespace.go`). Used only by the cluster-scoped reconciler. The namespace-scoped reconciler always targets its own namespace implicitly. It supports three targeting mechanisms that can be combined:
+`internal/controller/namespace.go` resolves the namespaces in scope. Only the cluster-scoped reconciler uses it. Three mechanisms combine:
 
-- **Label selectors** (`namespaceSelector`) - select namespaces by labels
-- **Explicit lists** (`namespaces`) - name specific namespaces
-- **Exclusions** (`excludeNamespaces`) - remove namespaces from the result
+- `namespaceSelector` selects by label
+- `namespaces` names them directly
+- `excludeNamespaces` removes them from the result
 
-System namespaces (`kube-system`, `kube-public`, `kube-node-lease`) are always excluded automatically.
+`kube-system`, `kube-public` and `kube-node-lease` are always excluded.
 
-After discovery, the global reconciler calls `FilterNamespacesWithLocalSchedules` to remove any namespace that contains a `LightsOutNamespaceSchedule`. This implements the precedence rule: a namespace-scoped schedule always wins over a global one.
+`FilterNamespacesWithLocalSchedules` then removes any namespace holding a `LightsOutNamespaceSchedule`. That is where the precedence rule lives: a namespace-scoped schedule always beats a cluster-wide one.
 
-### Workload Scaler
+### Workload scaler
 
-Handles the actual scaling of Kubernetes workloads (`internal/controller/scaler.go`):
+`internal/controller/scaler.go` performs the scaling:
 
-- **Deployments and StatefulSets** - scales replicas to 0 on downscale. Restores from the `original-replicas` annotation on upscale
-- **CronJobs** - suspends on downscale. Unsuspends on upscale, but only if LightsOut was the one that suspended it
+- **Deployments and StatefulSets** go to zero on downscale, and return to the value in the `original-replicas` annotation on upscale.
+- **CronJobs** suspend on downscale. They resume only if LightsOut was the one that suspended them.
 
-Key design properties:
+Four properties matter:
 
-- **Idempotent** - safe to retry. If a workload is already scaled down, it won't be touched again.
-- **Respects user intent** - if a user manually scales a workload while it's managed, LightsOut tracks this and won't overwrite user changes.
-- **Managed-by tracking** - each workload is annotated with the schedule name that manages it, preventing conflicts between schedules.
-- **Spec-only, then observed** - scaling writes the replica count and returns without waiting for pods. A downscale then counts terminating pods and publishes `lightsout_stuck_terminating_pods`, so a pod that never goes away cannot hold its node unnoticed.
+- **Idempotent.** A retry is safe. A workload already scaled down is left alone.
+- **Respects user intent.** A workload a user parked at zero is not claimed, and a user edit is not overwritten.
+- **Ownership tracked.** The `managed-by` annotation names the owning schedule, so two schedules cannot fight over one workload.
+- **Writes the spec, then observes.** Scaling writes the replica count and returns without waiting on pods. A downscale afterwards counts terminating pods and publishes `lightsout_stuck_terminating_pods`, so a pod that never goes away cannot hold its node unseen.
 
-### Rate Limiting
+### Rate limiting
 
-Prevents resource spikes during bulk scaling. When rate limiting is configured (`batchSize` and optional `delayBetweenBatches`), the reconciler uses a **non-blocking budget-based approach**: it processes up to `batchSize` actual scale operations per reconciliation cycle, then returns early and requeues itself after the configured delay. On the next reconcile, it re-lists workloads and continues - already-processed workloads are skipped cheaply via their annotations without consuming budget.
+With `batchSize` set, the reconciler takes a budget-based approach rather than blocking. It performs up to `batchSize` scale operations per cycle, then returns and requeues after `delayBetweenBatches`. The next cycle re-lists the workloads and continues. Already-processed workloads are skipped through their annotations, and cost no budget.
 
-This design keeps the controller responsive during large-scale operations. Spec changes, suspension, deletion, and period transitions (e.g., an upscale time arriving mid-downscale) are all picked up on the next requeue rather than being blocked until all batches finish. The requeue delay is `min(delayBetweenBatches, timeUntilNextTransition)` to ensure period transitions are never missed.
+This keeps the controller responsive during a large run. A spec change, a suspension, a deletion, or a period transition arriving mid-batch takes effect on the next requeue. None of them wait for the batches to finish. The requeue delay is `min(delayBetweenBatches, timeUntilNextTransition)`, so a transition is never missed.
 
-### ArgoCD Labeler
+### Custom resource handler
 
-Optional component that labels ArgoCD Application CRDs during scaling operations (`internal/controller/argocd.go`). When `spec.argoCD` is set on a schedule, the labeler:
+`internal/controller/customresource.go` turns operator-managed custom resources off for the window. For each declared kind it:
 
-- **Discovers** ArgoCD `Application` CRDs in the configured namespace (default: `argocd`)
-- **Filters** applications whose `spec.destination.namespace` matches the schedule's target namespaces
-- **Labels** matching applications with `lightsout.techsupport.mk/state: down` and `lightsout.techsupport.mk/managed-by: <schedule>` during downscale
-- **Removes** those labels during upscale
-
-This uses an unstructured client to avoid any compile-time dependency on ArgoCD. If the ArgoCD CRD is not installed on the cluster, the labeler gracefully skips with a log message.
-
-Execution is ordered to prevent false alerts:
-
-- **Downscale**: label ArgoCD apps first, then scale workloads
-- **Upscale**: scale workloads first, then transition ArgoCD apps from `down` → `warming-up`, then remove all labels once pods are ready (or `warmupTimeout` elapses)
-
-ArgoCD errors are best-effort - they are logged and emitted as events but never block workload scaling.
-
-See the [ArgoCD Integration Guide](argocd.md) for usage details.
-
-### FluxCD Suspender
-
-Optional component that suspends FluxCD Kustomization and HelmRelease resources during scaling operations (`internal/controller/fluxcd.go`). When `spec.fluxCD` is set on a schedule, the suspender:
-
-- **Discovers** Flux resources using two strategies:
-  - Cluster-wide, matching by `spec.targetNamespace` to the schedule's target namespaces (covers multi-tenant setups where Flux resources live in any namespace)
-  - Per target namespace, matching resources with no `spec.targetNamespace` (co-located pattern, where the resource lives in the same namespace it deploys to)
-- **Suspends** matching resources by setting `spec.suspend: true`, and labels them with `lightsout.techsupport.mk/state: down` during downscale
-- **Transitions** suspended resources to `warming-up` state on upscale, keeping them suspended until workloads in the target namespace are ready
-- **Resumes** resources (sets `spec.suspend: false`) and removes all labels and annotations once workloads are healthy or `warmupTimeout` elapses
-
-This uses an unstructured client, so there is no compile-time dependency on FluxCD. If FluxCD CRDs are not installed on the cluster, discovery returns empty and scaling proceeds normally.
-
-Execution is ordered to prevent FluxCD from reconciling workloads back to their Git-defined state while LightsOut has intentionally scaled them to zero:
-
-- **Downscale**: suspend Flux resources first, then scale workloads
-- **Upscale**: scale workloads first, then transition Flux resources from `down` → `warming-up`, then resume them once pods are ready (or `warmupTimeout` elapses)
-
-### Custom Resource Handler
-
-Optional component that turns operator-managed custom resources off during the downscale window (`internal/controller/customresource.go`). When `spec.customResources` is set, for each declared kind the handler:
-
-- **Discovers** matching resources in the schedule's target namespaces, filtered by optional `name` and `matchLabels`
+- **Discovers** matching resources in the target namespaces, narrowed by the optional `name` and `matchLabels`
 - **Captures** the current value of every configured field into the `original-fields` annotation, recording whether each field existed at all, then writes the downscale value
-- **Restores** the captured values on upscale, removing fields that did not exist before rather than setting them empty
-- **Waits** in a `warming-up` state until the workloads in the resource's namespace report ready, or `customResourceWarmupTimeout` elapses
-- **Deletes** matching resources instead, when an entry sets `delete: true`, leaving recreation to the owning operator
+- **Restores** the captured values on upscale, and removes a field that did not exist before rather than writing an empty value
+- **Waits** in `warming-up` until the workloads in that namespace report ready, or `customResourceWarmupTimeout` elapses
+- **Deletes** the resource instead when the entry sets `delete: true`, and leaves recreation to the owning operator
 
-Field paths are RFC 6901 JSON Pointers with a `*` wildcard for arrays and objects (`internal/controller/jsonpointer.go`), so a single entry can cover every element of, for example, an ECK `spec.nodeSets` array regardless of its length.
+Field paths are RFC 6901 JSON Pointers, with a `*` wildcard for arrays and objects (`internal/controller/jsonpointer.go`). One entry therefore covers every element of an array such as an ECK `spec.nodeSets`, whatever its length.
 
-Execution brackets workload scaling from the outside, which is what keeps applications from starting against a database that has not finished coming back:
+This step brackets workload scaling from the outside, which is what stops an application from starting against a database that is still coming back:
 
-- **Downscale**: turn custom resources off first, then scale workloads
-- **Upscale**: restore custom resources first, hold workloads scaled down until those resources are ready, then scale workloads, then run the ArgoCD and FluxCD warmups
+- **Downscale:** turn the custom resources off, then scale the workloads.
+- **Upscale:** restore the custom resources, hold the workloads down until those resources are ready, scale the workloads, then run the ArgoCD and FluxCD warmups.
 
-Like the GitOps integrations this uses unstructured objects, so there is no compile-time dependency on any operator and a missing CRD simply yields no matches. RBAC cannot be generated, because the API groups are unknown ahead of time. The `rbac.customResources` Helm value supplies it, rendered into its own ClusterRole.
+RBAC cannot be generated here, because the API groups are unknown until you declare them. The `rbac.customResources` Helm value supplies it, rendered into its own ClusterRole.
 
-See the [Custom Resource Integration Guide](custom-resources.md) for per-operator recipes.
+For the per-operator recipes, see [Custom resource integration](custom-resources.md).
 
-FluxCD errors are best-effort, they are logged and emitted as events but never block workload scaling.
+### ArgoCD labeler
 
-See the [FluxCD Integration Guide](fluxcd.md) for usage details.
+`internal/controller/argocd.go` labels ArgoCD Application CRDs when `spec.argoCD` is set. It:
 
-## Key Design Decisions
+- **Discovers** Applications in the configured namespace, `argocd` by default
+- **Filters** to those whose `spec.destination.namespace` is one of the schedule's targets
+- **Labels** them `state: down` and `managed-by: <schedule>` on downscale
+- **Removes** those labels on upscale
 
-### Resource Scopes
+Ordering keeps the alert window shut:
 
-**`LightsOutSchedule`** is cluster-scoped. It is intended for platform teams managing cost policies across multiple namespaces. A single resource can target dozens of namespaces via label selectors.
+- **Downscale:** label the Applications, then scale the workloads.
+- **Upscale:** scale the workloads, move the Applications from `down` to `warming-up`, then remove the labels once the pods are ready or `warmupTimeout` elapses.
 
-**`LightsOutNamespaceSchedule`** is namespace-scoped. It allows developers to define their own scaling schedules for their namespace without requiring cluster-level access. When a `LightsOutNamespaceSchedule` exists in a namespace, any `LightsOutSchedule` targeting that namespace will skip it - giving the namespace-scoped schedule full control.
+ArgoCD errors are best effort. LightsOut logs them and records events, and workload scaling continues.
 
-Both types share the same scheduling fields (cron expressions, timezone, workload types, rate limits, ArgoCD integration, FluxCD integration) via a common `LightsOutScheduleCore` struct. They can be independently enabled via `clusterSchedules.enabled` and `namespaceSchedules.enabled` in Helm values.
+For usage, see [ArgoCD integration](argocd.md).
 
-#### Upgrade note
+### FluxCD suspender
 
-The `LightsOutSchedule` reconciler checks for namespace schedules on every reconcile cycle, making one API call per target namespace. For most users this is invisible. If a global schedule targets a very large number of namespaces and reconcile latency matters, set `namespaceSchedules.enabled=false` to skip this check entirely - but this is an edge case, not a default concern.
+`internal/controller/fluxcd.go` suspends Kustomization and HelmRelease resources when `spec.fluxCD` is set. It:
 
-### Annotation-Based State
+- **Discovers** Flux resources two ways. It matches `spec.targetNamespace` against the schedule's targets across every namespace. It then searches each target namespace for resources that set no target namespace.
+- **Suspends** the matches with `spec.suspend: true` and labels them `state: down`
+- **Transitions** them to `warming-up` on upscale, still suspended, until the workloads report ready
+- **Resumes** them with `spec.suspend: false` and removes its labels, once the workloads are healthy or `warmupTimeout` elapses
 
-Original replica counts and management metadata are stored directly on the workloads as annotations. This avoids the need for an external database and ensures state stays co-located with the resources it describes. If the operator is uninstalled, the annotations remain harmless.
+Ordering stops Flux from restoring the replicas mid-window:
 
-### Finalizer for Cleanup
+- **Downscale:** suspend the Flux resources, then scale the workloads.
+- **Upscale:** scale the workloads, move the Flux resources to `warming-up`, then resume them once the pods are ready or `warmupTimeout` elapses.
 
-A finalizer on each `LightsOutSchedule` ensures that deleting a schedule restores all managed workloads first. Without this, deleting a schedule while workloads are scaled down would leave them at zero replicas permanently.
+FluxCD errors are best effort, the same as ArgoCD errors.
 
-### Idempotent Scaling
+For usage, see [FluxCD integration](fluxcd.md).
 
-Every scaling operation checks current state before acting. This means:
+## Design decisions
 
-- Partial failures during a reconciliation are safe - the next cycle picks up where it left off
-- Multiple reconciliations in quick succession don't cause issues
-- The controller can be restarted at any time without data loss
+### Resource scopes
 
-### Soft ArgoCD and FluxCD Dependencies
+`LightsOutSchedule` is cluster-scoped, for a platform team setting cost policy. One resource covers dozens of namespaces through a label selector.
 
-Both integrations use Kubernetes unstructured objects instead of importing third-party Go types. This means:
+`LightsOutNamespaceSchedule` is namespace-scoped, so a developer sets their own hours without cluster-level access. While one exists, every `LightsOutSchedule` skips that namespace, which hands the local schedule full control.
 
-- The operator compiles without any `argoproj.io` or FluxCD dependency
-- It runs normally on clusters without ArgoCD or FluxCD installed, if the CRDs are absent, discovery returns empty and scaling proceeds
-- RBAC permissions are opt-in: `rbac.argocd: true` for ArgoCD and `rbac.fluxcd: true` for FluxCD. Both are omitted by default
-- Each feature is independently opt-in via `spec.argoCD` and `spec.fluxCD` respectively
+Both share their scheduling fields through a common `LightsOutScheduleCore` struct. The `clusterSchedules.enabled` and `namespaceSchedules.enabled` Helm values turn each on independently.
+
+The cluster-scoped reconciler checks for namespace schedules on every cycle, at one API call per target namespace. That is invisible on most clusters. If a schedule targets a very large number of namespaces and reconcile latency matters, set `namespaceSchedules.enabled=false` to skip the check.
+
+### State in annotations
+
+The original replica count and the ownership metadata live on the workload as annotations. That removes the need for external storage, and keeps the state beside the thing it describes. Annotations left behind after an uninstall are inert.
+
+### Finalizer for cleanup
+
+The finalizer makes a delete restore the managed workloads first. Without it, deleting a schedule during a downscale would leave those workloads at zero for good.
+
+### Idempotent scaling
+
+Every operation reads the current state before it writes, which gives three properties:
+
+- A partial failure is safe, because the next cycle continues from where the last one stopped.
+- Reconciles in quick succession cause no harm.
+- The controller can restart at any point without losing state.
+
+### Soft GitOps and operator dependencies
+
+The ArgoCD, FluxCD and custom resource integrations all use unstructured objects rather than imported Go types. That gives four properties:
+
+- The operator compiles with no `argoproj.io`, FluxCD or database-operator dependency.
+- A missing CRD yields no matches, so scaling proceeds on a cluster without those tools.
+- RBAC is opt-in, through `rbac.argocd`, `rbac.fluxcd` and `rbac.customResources`. None are granted by default.
+- Each feature turns on separately, through `spec.argoCD`, `spec.fluxCD` and `spec.customResources`.
 
 ## Webhooks
 
-LightsOut includes optional admission webhooks for validation and defaulting. Both schedule types have their own webhook pair.
+Both schedule types have a webhook pair, and both are optional.
 
-**Mutating webhooks** - set `timezone` to `UTC` if not specified.
+The **mutating webhook** defaults `timezone` to `UTC`.
 
-**Validating webhooks** - reject invalid schedules before they're persisted:
+The **validating webhook** rejects a schedule that carries:
 
-- Validate cron expressions for both `upscale` and `downscale`
-- Validate the timezone is a recognized IANA timezone
-- Validate rate limit configurations (batch size > 0, non-negative delay)
-- Validate ArgoCD namespace is a valid DNS label when provided
-- Warn (but do not reject) when a schedule may conflict with an existing one
+- An invalid cron expression in `upscale` or `downscale`
+- A timezone that is not a recognised IANA name
+- A rate limit with a batch size below 1, or a negative delay
+- An ArgoCD namespace that is not a valid DNS label
+- An `argoCD.warmupTimeout` of zero or less
 
-The `LightsOutSchedule` validator additionally requires at least one namespace selection method (`namespaceSelector` or `namespaces`). The `LightsOutNamespaceSchedule` validator omits this check - the owning namespace is always implicit - and instead warns if a global `LightsOutSchedule` already targets the same namespace (explicit or via label selector).
+It warns, and still admits, when a schedule overlaps an existing one.
+
+The `LightsOutSchedule` validator also requires `namespaceSelector` or `namespaces`. The `LightsOutNamespaceSchedule` validator drops that check, because the owning namespace is implicit. It warns instead when a cluster-wide schedule already targets the same namespace, whether by name or by label.
+
+## Status
+
+Both schedule types report the same status. `kubectl describe` shows it in full.
+
+| Field | Description |
+|---|---|
+| `state` | `Up`, `Down` or `Unknown` |
+| `lastUpscaleTime`, `lastDownscaleTime` | When the schedule last scaled in each direction |
+| `nextUpscaleTime`, `nextDownscaleTime` | The next two transitions, from the period calculator |
+| `observedGeneration` | The spec generation the controller last processed |
+| `namespaces` | The namespaces the schedule currently manages, after discovery and filtering |
+| `workloadStats` | Managed and scaled counts, per workload type |
+| `scalingProgress` | `total`, `completed`, `failed` and `inProgress`. Present only during a batched run. |
+| `stuckTerminatingPods` | Pods still running well past their termination grace period after a downscale |
+| `conditions` | Standard Kubernetes conditions, including the reason a reconcile failed |
+
+`stuckTerminatingPods` is the one worth alerting on. Scaling a workload to zero writes the spec and returns. A pod the kubelet cannot kill therefore keeps its node alive while the schedule reports `Down`. A non-zero value means the namespace did not release the compute the downscale was supposed to free.
+
+`scalingProgress` is how a rate-limited run reports itself. It appears while batches are still outstanding and disappears when the run completes.
 
 ## Metrics
 
-LightsOut exposes Prometheus metrics via the controller-runtime metrics server. Both schedule types use the same metric names. The `schedule` label uses the resource name for cluster-scoped schedules (e.g. `my-global-schedule`) and `namespace/name` for namespace-scoped schedules (e.g. `team-a/my-schedule`) to avoid label collisions.
+LightsOut serves Prometheus metrics through the controller-runtime metrics server. Both schedule types use the same names. The `schedule` label holds the resource name for a cluster-scoped schedule, and `namespace/name` for a namespace-scoped one, so the two cannot collide.
 
-| Metric                                        | Type      | Labels                                                | Description                   |
-| --------------------------------------------- | --------- | ----------------------------------------------------- | ----------------------------- |
-| `lightsout_schedule_state`                    | Gauge     | `schedule`                                            | Current state (1=Up, 0=Down)  |
-| `lightsout_next_transition_seconds`           | Gauge     | `schedule`, `transition_type`                         | Seconds until next transition |
-| `lightsout_scaling_operations_total`          | Counter   | `schedule`, `namespace`, `workload_type`, `operation` | Total scaling operations      |
-| `lightsout_scaling_errors_total`              | Counter   | `schedule`, `namespace`, `workload_type`              | Total scaling errors          |
-| `lightsout_managed_workloads`                 | Gauge     | `schedule`, `workload_type`                           | Managed workload count        |
-| `lightsout_scaling_batches_total`             | Counter   | `schedule`, `direction`                               | Batches processed             |
-| `lightsout_scaling_workloads_processed_total` | Counter   | `schedule`, `direction`, `result`                     | Workloads processed           |
-| `lightsout_scaling_duration_seconds`          | Histogram | `schedule`, `direction`                               | Scaling operation duration    |
-| `lightsout_stuck_terminating_pods`            | Gauge     | `schedule`, `namespace`                               | Pods past their grace period  |
-| `lightsout_last_reconcile_timestamp_seconds`  | Gauge     | `schedule`                                            | Last reconcile timestamp      |
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lightsout_schedule_state` | Gauge | `schedule` | Current state (1=Up, 0=Down) |
+| `lightsout_next_transition_seconds` | Gauge | `schedule`, `transition_type` | Seconds until the next transition |
+| `lightsout_scaling_operations_total` | Counter | `schedule`, `namespace`, `workload_type`, `operation` | Scaling operations |
+| `lightsout_scaling_errors_total` | Counter | `schedule`, `namespace`, `workload_type` | Scaling errors |
+| `lightsout_managed_workloads` | Gauge | `schedule`, `workload_type` | Managed workloads |
+| `lightsout_scaling_batches_total` | Counter | `schedule`, `direction` | Batches processed |
+| `lightsout_scaling_workloads_processed_total` | Counter | `schedule`, `direction`, `result` | Workloads processed |
+| `lightsout_scaling_duration_seconds` | Histogram | `schedule`, `direction` | Duration of a scaling operation |
+| `lightsout_stuck_terminating_pods` | Gauge | `schedule`, `namespace` | Pods past their grace period |
+| `lightsout_last_reconcile_timestamp_seconds` | Gauge | `schedule` | Timestamp of the last reconcile |

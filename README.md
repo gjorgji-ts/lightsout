@@ -4,42 +4,41 @@
 [![Release](https://img.shields.io/github/v/release/gjorgji-ts/lightsout)](https://github.com/gjorgji-ts/lightsout/releases/latest)
 [![License](https://img.shields.io/github/license/gjorgji-ts/lightsout)](LICENSE)
 
-LightsOut is a Kubernetes operator that automatically scales down workloads during off-hours and restores them during business hours. This helps platform engineering teams **save over 60% on development and staging cluster costs**.
+**Turn the lights off on your dev clusters at night. Turn them back on before anyone notices.**
 
-Define schedules as custom resources, and LightsOut takes care of the rest. You can scale Deployments, StatefulSets, and CronJobs across namespaces according to your configured timetable without any application changes. Original replica counts are automatically preserved and restored.
+LightsOut is a Kubernetes operator that scales workloads down outside business hours and restores them in the morning. You write a cron schedule as a custom resource. LightsOut handles Deployments, StatefulSets, CronJobs, and the databases behind them. Your applications need no changes.
 
-## Why LightsOut?
+## Why LightsOut
 
-Development and staging clusters are typically idle outside business hours, including evenings, nights, and weekends. This equates to approximately 70% of the week, during which you’re paying for compute resources that remain unused.
+A weekday schedule of 06:00 to 18:00 leaves the cluster idle for about two thirds of the week. Nights and weekends are the largest line on a dev or staging invoice, and nobody is using them.
 
-LightsOut, in conjunction with a node autoscaler like [Karpenter](https://karpenter.sh/), transforms idle time into savings.
+Cutting that bill takes three steps:
 
-1. **LightsOut scales workloads to zero**: Deployments, StatefulSets, and CronJobs are scaled down or suspended according to your schedule.
-2. **Karpenter removes empty nodes**: With no workloads requesting resources, Karpenter (or Cluster Autoscaler) deprovisions the underlying nodes.
-3. **Cloud provider stops billing**: Since there are no nodes, there are no compute charges.
+1. **LightsOut scales workloads to zero.** Deployments and StatefulSets go to zero replicas, CronJobs suspend, and operator-managed datastores hibernate.
+2. **Your node autoscaler removes the empty nodes.** [Karpenter](https://karpenter.sh/) or Cluster Autoscaler sees nodes that nothing requests, and deprovisions them.
+3. **The cloud provider stops charging.** No nodes means no compute bill.
 
-When business hours resume, LightsOut restores workloads to their original replica counts, and your autoscaler provisions nodes to meet the increased demand.
+In the morning LightsOut restores the original replica counts, and the autoscaler brings the nodes back.
 
-> [!NOTE]
-> LightsOut manages the workload layer, while your node autoscaler handles the infrastructure layer. Together, they eliminate idle compute costs.
+> [!IMPORTANT]
+> The node autoscaler is what saves the money. A workload at zero replicas frees no compute on its own, because the node keeps running and keeps billing. Without an autoscaler that deprovisions, the schedule changes nothing on your invoice.
 
 ## Features
 
-- **Cron-based scheduling** with IANA timezone support
-- **Manages Deployments, StatefulSets, and CronJobs** - scales replicas to zero or suspends CronJobs
-- **HPA-aware scaling** - automatically patches `spec.minReplicas` on attached HorizontalPodAutoscalers to prevent fight-back, then restores on upscale
-- **Flexible namespace targeting** - label selectors, explicit lists, and exclusions
-- **Namespace-scoped schedules** - developers can define their own schedules per namespace, independent of global schedules
-- **Rate-limited scaling** - batch workloads to avoid resource spikes
-- **Admission webhooks** - validates schedules and detects overlaps before they're applied
-- **ArgoCD integration** - optional labeling of ArgoCD Application CRDs to prevent false alerts during downscale
-- **FluxCD integration** - optional suspension of FluxCD Kustomization and HelmRelease resources to prevent drift detection and alert noise during downscale
-- **Operator-managed custom resources** - hibernate databases, brokers and search clusters through their own CRs, restoring the exact values on upscale, with applications held back until the data services are ready
-- **Prometheus metrics** - observe schedule state, scaling operations, errors, and durations
+- **Cron scheduling** with IANA timezone support
+- **Deployments, StatefulSets and CronJobs** scaled to zero or suspended, and restored to the exact values they held
+- **Operator-managed datastores** hibernated through their own custom resources, with applications held back until the data layer is ready
+- **HPA-aware** disables HPA scale-up during the downscale so the autoscaler cannot undo it
+- **Namespace targeting** by label selector, explicit list, or exclusion
+- **Namespace-scoped schedules** so a team can set its own hours, which take precedence over a cluster-wide schedule
+- **Rate-limited scaling** in batches, to avoid an API spike on large clusters
+- **Admission webhooks** that reject invalid schedules and warn about overlaps
+- **ArgoCD and FluxCD integration** to stop false alerts and drift correction during the downscale
+- **Prometheus metrics** for schedule state, operations, errors and durations
 
-## Quick Start
+## Quick start
 
-Install with Helm (webhooks disabled for simplicity):
+Install with Helm. This command disables the webhooks, which keeps the first install simple:
 
 ```bash
 helm install lightsout oci://ghcr.io/gjorgji-ts/charts/lightsout \
@@ -55,68 +54,66 @@ kind: LightsOutSchedule
 metadata:
   name: dev-weekday-hours
 spec:
-  upscale: "0 6 * * 1-5"        # 6 AM Monday–Friday
-  downscale: "0 18 * * 1-5"     # 6 PM Monday–Friday
+  upscale: "0 6 * * 1-5"        # 06:00 Monday to Friday
+  downscale: "0 18 * * 1-5"     # 18:00 Monday to Friday
   timezone: "America/New_York"
   namespaceSelector:
     matchLabels:
       environment: dev
 ```
 
-Check status:
+Check the state:
 
 ```bash
 kubectl get lightsoutschedules
 ```
 
-```
+```text
 NAME               STATE   UPSCALE       DOWNSCALE     SUSPENDED   AGE
 dev-weekday-hours  Up      0 6 * * 1-5   0 18 * * 1-5  false       7d
 ```
 
-For production setups with webhook validation, see the [Setup Guide](docs/setup-guide.md).
+For an install with webhook validation, see [Setup guide](docs/setup-guide.md).
 
-## How It Works
+## How it works
 
-LightsOut runs as a controller that watches two custom resource types:
+The controller watches two custom resource types:
 
-- **`LightsOutSchedule`** (cluster-scoped) - for platform teams managing cost policies across multiple namespaces. Supports label selectors and explicit namespace lists.
-- **`LightsOutNamespaceSchedule`** (namespace-scoped) - for developers who want to define their own schedule for their namespace. When a namespace schedule exists, any global schedule targeting that namespace automatically skips it.
+- **`LightsOutSchedule`** is cluster-scoped, for a platform team that sets cost policy across many namespaces. It targets namespaces by label selector or by name.
+- **`LightsOutNamespaceSchedule`** is namespace-scoped, for a team that wants its own hours. A cluster-wide schedule skips any namespace that holds one.
 
-On each reconciliation, the controller calculates whether the current time falls in an "up" or "down" period based on your cron expressions, discovers target namespaces and workloads, and scales accordingly. Original replica counts are stored in annotations so they can be restored exactly.
+On each reconcile the controller reads the two cron expressions and decides whether the current time falls in the up period or the down period. It then finds the target namespaces and workloads. It records the original replica count in an annotation, so the upscale restores the exact value rather than a guess.
 
-For a deeper look at the architecture, see [docs/architecture.md](docs/architecture.md).
+For the internals, see [Architecture](docs/architecture.md).
 
 ## Configuration
 
-### `LightsOutSchedule` (cluster-scoped)
-
-Managed by platform teams. Targets workloads across one or more namespaces.
+### `LightsOutSchedule`, cluster-scoped
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `upscale` | string | Yes | Cron expression for scaling up |
-| `downscale` | string | Yes | Cron expression for scaling down |
+| `upscale` | string | Yes | Cron expression for the upscale |
+| `downscale` | string | Yes | Cron expression for the downscale |
 | `timezone` | string | No | IANA timezone (default: `UTC`) |
-| `namespaceSelector` | LabelSelector | No | Select namespaces by label |
+| `namespaceSelector` | LabelSelector | No | Selects namespaces by label |
 | `namespaces` | []string | No | Explicit list of namespace names |
-| `excludeNamespaces` | []string | No | Namespaces to exclude |
-| `suspend` | bool | No | Pause all operations (default: `false`) |
-| `workloadTypes` | []string | No | Filter by type: `Deployment`, `StatefulSet`, `CronJob` |
-| `excludeLabels` | LabelSelector | No | Skip workloads matching these labels |
-| `includeOwnedWorkloads` | bool | No | Scale workloads owned by another controller (default: `false`) |
-| `upscaleRateLimit` | RateLimitConfig | No | Rate limit upscale operations |
-| `downscaleRateLimit` | RateLimitConfig | No | Rate limit downscale operations |
-| `argoCD` | ArgoCDConfig | No | Enable [ArgoCD integration](docs/argocd.md) |
-| `fluxCD` | FluxCDConfig | No | Enable [FluxCD integration](docs/fluxcd.md) |
-| `customResources` | []CustomResourceConfig | No | Turn operator-managed CRs off ([guide](docs/custom-resources.md)) |
-| `customResourceWarmupTimeout` | Duration | No | Cap on the upscale readiness wait (default: `10m`) |
+| `excludeNamespaces` | []string | No | Namespaces to leave alone |
+| `suspend` | bool | No | Pauses every operation (default: `false`) |
+| `workloadTypes` | []string | No | Limits to `Deployment`, `StatefulSet` or `CronJob` |
+| `excludeLabels` | LabelSelector | No | Skips workloads carrying these labels |
+| `includeOwnedWorkloads` | bool | No | Scales workloads owned by another controller (default: `false`) |
+| `upscaleRateLimit` | RateLimitConfig | No | Batches the upscale |
+| `downscaleRateLimit` | RateLimitConfig | No | Batches the downscale |
+| `argoCD` | ArgoCDConfig | No | Enables [ArgoCD integration](docs/argocd.md) |
+| `fluxCD` | FluxCDConfig | No | Enables [FluxCD integration](docs/fluxcd.md) |
+| `customResources` | []CustomResourceConfig | No | Turns operator-managed CRs off ([guide](docs/custom-resources.md)) |
+| `customResourceWarmupTimeout` | Duration | No | Caps the upscale readiness wait (default: `10m`) |
 
-At least one of `namespaceSelector` or `namespaces` must be specified.
+Set at least one of `namespaceSelector` or `namespaces`.
 
-### `LightsOutNamespaceSchedule` (namespace-scoped)
+### `LightsOutNamespaceSchedule`, namespace-scoped
 
-Created by developers in their own namespace. No namespace selection fields - the schedule always manages the namespace it lives in. Supports all the same scheduling fields as `LightsOutSchedule`.
+A developer creates this in their own namespace. It carries the same scheduling fields, minus the namespace selection ones, because it always manages the namespace it lives in:
 
 ```yaml
 apiVersion: lightsout.techsupport.mk/v1alpha1
@@ -125,16 +122,16 @@ metadata:
   name: team-hours
   namespace: team-a
 spec:
-  upscale: "0 8 * * 1-5"        # 8 AM Monday–Friday
-  downscale: "0 20 * * 1-5"     # 8 PM Monday–Friday
+  upscale: "0 8 * * 1-5"        # 08:00 Monday to Friday
+  downscale: "0 20 * * 1-5"     # 20:00 Monday to Friday
   timezone: "Europe/Berlin"
 ```
 
-When this resource exists in a namespace, any `LightsOutSchedule` targeting that namespace will skip it automatically.
+A `LightsOutSchedule` that targets this namespace skips it while this resource exists.
 
-### Excluding Workloads
+### Excluding workloads
 
-To protect specific workloads from scaling, use `excludeLabels` on the schedule:
+`excludeLabels` protects a workload from the schedule:
 
 ```yaml
 spec:
@@ -143,13 +140,11 @@ spec:
       critical: "true"
 ```
 
-Any workloads with matching labels will be skipped during scaling operations.
+### Operator-managed workloads
 
-### Operator-Managed Workloads
+LightsOut skips workloads that carry a controller owner reference, such as a StatefulSet built by a database operator. The owning controller reconciles the replica count straight back, so scaling one to zero starts a fight LightsOut loses. Worse, its own annotation then makes the next reconcile treat the workload as already scaled down.
 
-Workloads carrying a controller owner reference are skipped by default. These are created by another operator from its own custom resource, such as a StatefulSet built by a database operator. The owning controller reconciles their replica count, so scaling them to zero only makes it restore them. LightsOut's own annotations then make later reconciles treat them as already scaled down.
-
-Turn the operator's own custom resource off instead, which is what `spec.customResources` does. The [Custom Resource Integration guide](docs/custom-resources.md) carries ready-made stanzas for RabbitMQ, ClickHouse, CloudNativePG, ECK, Keycloak, StarRocks, MariaDB, Redis and Strimzi:
+Turn the operator's custom resource off instead. `spec.customResources` does that, and [Custom resource integration](docs/custom-resources.md) carries a tested recipe for RabbitMQ, ClickHouse, CloudNativePG, ECK, Keycloak, StarRocks, MariaDB, Redis and Strimzi:
 
 ```yaml
 spec:
@@ -162,18 +157,18 @@ spec:
           value: "on"
 ```
 
-Some operators have no field that reaches zero and must instead be told to stop reconciling, leaving LightsOut to scale the workloads itself. Those need both a `customResources` entry for the pause switch and:
+Some operators have no field that reaches zero. Those must be told to stop reconciling, which leaves LightsOut to scale the workloads itself. They need a `customResources` entry for the pause switch, and:
 
 ```yaml
 spec:
   includeOwnedWorkloads: true
 ```
 
-Without pausing the owning controller, enabling this on its own will not keep the workloads scaled down.
+This flag on its own does not hold the workloads down. The pause entry is what stops the owning controller from restoring them.
 
-### Rate Limiting
+### Rate limiting
 
-Gradually scale workloads in batches to avoid resource spikes:
+Scale in batches, so a large cluster does not produce an API spike:
 
 ```yaml
 spec:
@@ -182,9 +177,9 @@ spec:
     delayBetweenBatches: "5s"
 ```
 
-### ArgoCD Integration
+### ArgoCD integration
 
-If you use ArgoCD, enabling the `argoCD` field prevents ArgoCD from firing false "Degraded" or "OutOfSync" alerts when LightsOut scales workloads down:
+ArgoCD reports a workload at zero replicas as `Degraded` and `OutOfSync`, and `selfHeal` reverts the downscale. The `argoCD` field labels the matching Application so your notification triggers can tell an intentional downscale from a real failure:
 
 ```yaml
 spec:
@@ -192,11 +187,11 @@ spec:
     namespace: argocd    # optional, defaults to "argocd"
 ```
 
-LightsOut labels ArgoCD Application CRDs with `lightsout.techsupport.mk/state: down` during downscale and removes the labels on upscale. See the [ArgoCD Integration Guide](docs/argocd.md) for details.
+Labels alone do not stop a sync from undoing the work. ArgoCD also needs `ignoreDifferences` entries and `RespectIgnoreDifferences=true`. For those, see [ArgoCD integration](docs/argocd.md).
 
-### FluxCD Integration
+### FluxCD integration
 
-If you use FluxCD, enabling the `fluxCD` field suspends matching Kustomization and HelmRelease resources during downscale, preventing FluxCD from reconciling workloads back to their Git-defined state while they are intentionally scaled to zero:
+FluxCD has no equivalent of `ignoreDifferences`, so the Flux resource itself has to be suspended for the window. The `fluxCD` field sets `spec.suspend: true` on the matching Kustomization and HelmRelease resources, and resumes them on upscale after a warming-up period:
 
 ```yaml
 spec:
@@ -204,54 +199,49 @@ spec:
     namespace: flux-system    # optional, defaults to "flux-system"
 ```
 
-LightsOut sets `spec.suspend: true` on matching Flux resources during downscale and resumes them (with a warming-up grace period) on upscale. See the [FluxCD Integration Guide](docs/fluxcd.md) for details.
+For details, see [FluxCD integration](docs/fluxcd.md).
 
-> **Note:** You must opt in to the required RBAC by setting `rbac.fluxcd: true` in your Helm values.
+> [!NOTE]
+> The FluxCD integration needs RBAC you opt in to. Set `rbac.fluxcd: true` in your Helm values.
 
 ## Observability
 
-LightsOut exposes Prometheus metrics on the metrics endpoint:
+LightsOut serves these Prometheus metrics on the metrics endpoint:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `lightsout_schedule_state` | Gauge | Current state per schedule (1=Up, 0=Down) |
-| `lightsout_next_transition_seconds` | Gauge | Seconds until next state transition |
-| `lightsout_scaling_operations_total` | Counter | Total scaling operations by schedule, namespace, type |
-| `lightsout_scaling_errors_total` | Counter | Total scaling errors |
-| `lightsout_managed_workloads` | Gauge | Number of workloads being managed |
-| `lightsout_scaling_batches_total` | Counter | Batches processed during scaling |
-| `lightsout_scaling_workloads_processed_total` | Counter | Workloads processed with success/failure result |
-| `lightsout_scaling_duration_seconds` | Histogram | Time taken for scaling operations |
-| `lightsout_stuck_terminating_pods` | Gauge | Pods still running past their grace period after a downscale, by schedule and namespace |
-| `lightsout_last_reconcile_timestamp_seconds` | Gauge | Unix timestamp of last reconciliation |
+| `lightsout_schedule_state` | Gauge | State per schedule (1=Up, 0=Down) |
+| `lightsout_next_transition_seconds` | Gauge | Seconds until the next transition |
+| `lightsout_scaling_operations_total` | Counter | Scaling operations by schedule, namespace and type |
+| `lightsout_scaling_errors_total` | Counter | Scaling errors |
+| `lightsout_managed_workloads` | Gauge | Workloads under management |
+| `lightsout_scaling_batches_total` | Counter | Batches processed |
+| `lightsout_scaling_workloads_processed_total` | Counter | Workloads processed, by result |
+| `lightsout_scaling_duration_seconds` | Histogram | Duration of scaling operations |
+| `lightsout_stuck_terminating_pods` | Gauge | Pods past their grace period after a downscale |
+| `lightsout_last_reconcile_timestamp_seconds` | Gauge | Unix timestamp of the last reconcile |
 
-Scaling events are also recorded as Kubernetes Events on the `LightsOutSchedule` and `LightsOutNamespaceSchedule` resources.
+LightsOut also records scaling events as Kubernetes Events on the schedule resource.
 
-## Using with Karpenter
+## Using a node autoscaler
 
-[Karpenter](https://karpenter.sh/) needs no special configuration here. The two tools divide the work:
+[Karpenter](https://karpenter.sh/) needs no configuration for this. The two tools split the work: LightsOut reads the schedule and empties the workloads, and Karpenter removes the nodes nothing needs.
 
-- **LightsOut** reads cron schedules and scales workloads to zero during off-hours.
-- **Karpenter** watches node utilization and removes nodes nothing needs.
+Karpenter drains and removes the empty nodes within minutes of a downscale, provided its `NodePool` consolidation policy is on. That is the default.
 
-Karpenter drains and terminates the empty nodes within minutes of a downscale, as long as its `NodePool` consolidation policy is on. That is the default.
-
-> [!IMPORTANT]
-> The node autoscaler is what saves the money. Scaling a workload to zero frees no compute on its own, because the node keeps running and keeps billing. Pair LightsOut with an autoscaler that deprovisions, or the schedule changes nothing on your invoice.
-
-[Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler) works the same way, as does any node autoscaler that deprovisions underused nodes.
+[Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler) behaves the same way, as does any autoscaler that deprovisions underused nodes.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) - how LightsOut works internally
-- [HPA Integration](docs/hpa.md) - automatic HorizontalPodAutoscaler handling
-- [ArgoCD Integration](docs/argocd.md) - prevent false alerts when scaling down
-- [FluxCD Integration](docs/fluxcd.md) - prevent drift detection when scaling down
-- [Custom Resource Integration](docs/custom-resources.md) - hibernate operator-managed databases and brokers, with per-operator recipes
-- [Setup Guide](docs/setup-guide.md) - installation with and without webhooks
-- [Security Model](docs/security-model.md) - RBAC, risks, and mitigations
-- [Examples](examples/) - sample schedule configurations
+- [Architecture](docs/architecture.md) - the reconcile loop and the internals
+- [Setup guide](docs/setup-guide.md) - installation with and without webhooks
+- [Custom resource integration](docs/custom-resources.md) - hibernate databases and brokers, with a recipe per operator
+- [ArgoCD integration](docs/argocd.md) - stop false alerts and prevent selfHeal from reverting a downscale
+- [FluxCD integration](docs/fluxcd.md) - suspend Flux resources for the window
+- [HPA integration](docs/hpa.md) - how LightsOut stops an HPA from undoing the downscale
+- [Security model](docs/security-model.md) - RBAC, risks and mitigations
+- [Examples](examples/) - sample schedules
 
 ## License
 
-Apache License 2.0 - see [LICENSE](LICENSE) for details.
+Apache License 2.0. See [LICENSE](LICENSE).

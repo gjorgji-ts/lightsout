@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -186,6 +185,11 @@ func TurnCustomResourceDown(
 	labels[constants.ManagedByLabel] = scheduleName
 	obj.SetLabels(labels)
 
+	// This stays an Update, unlike the metadata-only writes elsewhere. A configured
+	// path can contain a `*` segment that matches an array element, and a JSON merge
+	// patch replaces a full array instead of merging it. That would discard an
+	// operator's concurrent edit to a sibling element. A conflict is the safer
+	// failure, because the next reconcile retries it.
 	if err := c.Update(ctx, obj); err != nil {
 		return false, err
 	}
@@ -263,6 +267,7 @@ func RestoreCustomResourceFields(
 	labels[constants.StateLabel] = constants.StateWarmingUp
 	obj.SetLabels(labels)
 
+	// Update and not patch, for the array reason given in the downscale path above.
 	if err := c.Update(ctx, obj); err != nil {
 		return false, err
 	}
@@ -281,23 +286,13 @@ func RestoreCustomResourceFields(
 // conflict, and a null value removes a key. Only metadata is touched here, which
 // makes a patch sufficient: nothing needs the read-modify-write an Update implies.
 func clearCustomResourceState(ctx context.Context, c client.Client, obj *unstructured.Unstructured) error {
-	patch, err := json.Marshal(map[string]any{
-		"metadata": map[string]any{
-			"labels": map[string]any{
-				constants.StateLabel:     nil,
-				constants.ManagedByLabel: nil,
-			},
-			"annotations": map[string]any{
-				constants.OriginalFieldsAnnotation: nil,
-				constants.WarmingUpSinceAnnotation: nil,
-			},
+	return applyMergePatch(ctx, c, obj, objectPatch{
+		RemoveAnnotations: []string{
+			constants.OriginalFieldsAnnotation,
+			constants.WarmingUpSinceAnnotation,
 		},
+		RemoveLabels: []string{constants.StateLabel, constants.ManagedByLabel},
 	})
-	if err != nil {
-		return fmt.Errorf("building the release patch: %w", err)
-	}
-
-	return c.Patch(ctx, obj, client.RawPatch(types.MergePatchType, patch))
 }
 
 // DeleteCustomResources removes matching resources, for operators whose only

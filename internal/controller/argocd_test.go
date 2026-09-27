@@ -620,3 +620,91 @@ func ownedPod(name, ownerKind string, ready corev1.ConditionStatus) corev1.Pod {
 	}
 	return pod
 }
+
+// ArgoCD rewrites Application status on every reconcile, so the copy the reconciler
+// holds is often stale by the time it labels. Update rejects a stale copy.
+func TestLabelArgoCDAppDown_StaleCopyStillLabels(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	app := newArgoCDApp("web-app", "dev", nil)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).Build()
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: "argocd", Name: "web-app"}
+
+	get := func() *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(schema.GroupVersionKind{Group: "argoproj.io", Version: "v1alpha1", Kind: "Application"})
+		if err := fakeClient.Get(ctx, key, u); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return u
+	}
+
+	stale := get()
+	bumpResourceVersion(t, fakeClient, get())
+
+	if _, err := LabelArgoCDAppDown(ctx, fakeClient, stale, "dev-schedule"); err != nil {
+		t.Fatalf("labeling a stale Application must not conflict, got: %v", err)
+	}
+
+	got := get()
+	if got.GetLabels()[constants.StateLabel] != constants.StateDown {
+		t.Errorf("state = %q, want down", got.GetLabels()[constants.StateLabel])
+	}
+	if got.GetLabels()[constants.ManagedByLabel] != "dev-schedule" {
+		t.Errorf("managed-by = %q, want dev-schedule", got.GetLabels()[constants.ManagedByLabel])
+	}
+	if got.GetLabels()["operator-touched"] != "yes" {
+		t.Error("patch clobbered ArgoCD's concurrent write")
+	}
+}
+
+// Removing the last label LightsOut knows about must not delete the whole label map.
+func TestCompleteArgoCDWarmup_StaleCopyKeepsForeignMetadata(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	app := newArgoCDAppWithAnnotations("api-app",
+		map[string]string{
+			constants.StateLabel:     constants.StateWarmingUp,
+			constants.ManagedByLabel: "dev-schedule",
+		},
+		map[string]string{constants.WarmingUpSinceAnnotation: "2026-03-21T08:00:00Z"},
+	)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).Build()
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: app.GetNamespace(), Name: "api-app"}
+
+	get := func() *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(schema.GroupVersionKind{Group: "argoproj.io", Version: "v1alpha1", Kind: "Application"})
+		if err := fakeClient.Get(ctx, key, u); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return u
+	}
+
+	stale := get()
+	bumpResourceVersion(t, fakeClient, get())
+
+	if err := CompleteArgoCDWarmup(ctx, fakeClient, stale); err != nil {
+		t.Fatalf("completing warmup on a stale Application must not conflict, got: %v", err)
+	}
+
+	got := get()
+	if _, ok := got.GetLabels()[constants.StateLabel]; ok {
+		t.Error("state label survived")
+	}
+	if _, ok := got.GetLabels()[constants.ManagedByLabel]; ok {
+		t.Error("managed-by label survived")
+	}
+	if _, ok := got.GetAnnotations()[constants.WarmingUpSinceAnnotation]; ok {
+		t.Error("warming-up-since annotation survived")
+	}
+	if got.GetLabels()["operator-touched"] != "yes" {
+		t.Error("removing our labels deleted the whole label map")
+	}
+}

@@ -148,8 +148,9 @@ func TestDiscoverFluxResources_NoMatch(t *testing.T) {
 func TestDiscoverFluxResources_MultiTenantNamespace(t *testing.T) {
 	scheme := runtime.NewScheme()
 
-	// HelmRelease lives in a team namespace (not flux-system), targets an app namespace.
-	// This is the multi-tenant pattern: prior to the cluster-wide fix this was not discovered.
+	// The multi-tenant pattern: the HelmRelease lives in a team namespace rather than
+	// flux-system, and targets an app namespace. Discovery must search every namespace
+	// to find it, not only the configured Flux namespace.
 	hr := newFluxHelmRelease("hr-app", "team-a", "my-app", nil, false)
 	ks := newFluxKustomization("ks-other", "flux-system", "other", nil, false) // should not match
 
@@ -634,9 +635,9 @@ func TestHandleFluxCDWarmup_DoesNotTagUnmanagedResource(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
 
-	// Resource in the target namespace with no LightsOut labels, never managed by us.
-	// Before the fix, the default switch case would call TransitionFluxResourceToWarmingUp
-	// on this resource, stamping it with managed-by and state=warming-up.
+	// A resource in the target namespace that carries no LightsOut labels, so this
+	// schedule never claimed it. Warmup must leave it alone rather than stamping it
+	// with managed-by and state=warming-up.
 	ks := newFluxKustomization("ks-unmanaged", "flux-system", "dev", nil, false)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ks).Build()
@@ -721,5 +722,99 @@ func TestHandleFluxCDWarmup_CoLocatedUsesOwnNamespace(t *testing.T) {
 	stillWarmingUp := handleFluxCDWarmup(context.Background(), fakeClient, nil, nil, cfg, "dev-schedule", []string{"team-a"}, now)
 	if stillWarmingUp {
 		t.Errorf("expected stillWarmingUp = false: co-located resource should use own namespace for readiness check")
+	}
+}
+
+// Flux rewrites Kustomization status on every reconcile, so the copy in hand is often
+// stale. Suspending adds labels and removes the warming-up annotation in one write,
+// which exercises both halves of the patch.
+func TestSuspendFluxResource_StaleCopyStillSuspends(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	ks := newFluxKustomization("ks-dev", "flux-system", "dev", nil, false)
+	ks.SetAnnotations(map[string]string{constants.WarmingUpSinceAnnotation: "2026-03-21T08:00:00Z"})
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ks).Build()
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: "flux-system", Name: "ks-dev"}
+
+	get := func() *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization",
+		})
+		if err := fakeClient.Get(ctx, key, u); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return u
+	}
+
+	stale := get()
+	bumpResourceVersion(t, fakeClient, get())
+
+	if _, err := SuspendFluxResource(ctx, fakeClient, stale, "dev-schedule"); err != nil {
+		t.Fatalf("suspending a stale Flux resource must not conflict, got: %v", err)
+	}
+
+	got := get()
+	suspended, _, _ := unstructured.NestedBool(got.Object, "spec", "suspend")
+	if !suspended {
+		t.Error("spec.suspend = false, want true")
+	}
+	if got.GetLabels()[constants.StateLabel] != constants.StateDown {
+		t.Errorf("state = %q, want down", got.GetLabels()[constants.StateLabel])
+	}
+	if _, ok := got.GetAnnotations()[constants.WarmingUpSinceAnnotation]; ok {
+		t.Error("warming-up-since annotation survived")
+	}
+	if got.GetLabels()["operator-touched"] != "yes" {
+		t.Error("patch clobbered Flux's concurrent write")
+	}
+}
+
+// Resuming removes every label LightsOut owns. If that emptied the map in the copy in
+// hand, a diffed patch would delete the whole map on the server.
+func TestResumeFluxResource_StaleCopyKeepsForeignMetadata(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	ks := newFluxKustomization("ks-dev", "flux-system", "dev", map[string]string{
+		constants.ManagedByLabel: "dev-schedule",
+		constants.StateLabel:     constants.StateDown,
+	}, true)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ks).Build()
+	ctx := context.Background()
+	key := client.ObjectKey{Namespace: "flux-system", Name: "ks-dev"}
+
+	get := func() *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(schema.GroupVersionKind{
+			Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization",
+		})
+		if err := fakeClient.Get(ctx, key, u); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return u
+	}
+
+	stale := get()
+	bumpResourceVersion(t, fakeClient, get())
+
+	if _, err := ResumeFluxResource(ctx, fakeClient, stale, "dev-schedule"); err != nil {
+		t.Fatalf("resuming a stale Flux resource must not conflict, got: %v", err)
+	}
+
+	got := get()
+	suspended, _, _ := unstructured.NestedBool(got.Object, "spec", "suspend")
+	if suspended {
+		t.Error("spec.suspend = true, want false")
+	}
+	if _, ok := got.GetLabels()[constants.ManagedByLabel]; ok {
+		t.Error("managed-by label survived")
+	}
+	if got.GetLabels()["operator-touched"] != "yes" {
+		t.Error("removing our labels deleted the whole label map")
 	}
 }

@@ -1,59 +1,61 @@
-## Security Model
+# Security model
 
-### RBAC Permissions
+## RBAC permissions
 
-The LightsOut controller requires **cluster-wide permissions** to modify workloads. This is by design, as the operator needs to scale workloads across namespaces based on configured schedules.
+The controller needs cluster-wide permissions to modify workloads. That is deliberate. A schedule targets namespaces by label, and the matching set grows as new namespaces appear.
 
-#### Required Permissions
+### Required permissions
 
-| Resource | API Group | Verbs | Purpose |
+| Resource | API group | Verbs | Purpose |
 |----------|-----------|-------|---------|
-| Deployments | apps | get, list, watch, patch, update | Scale replicas to 0 during off-hours, restore during business hours |
-| StatefulSets | apps | get, list, watch, patch, update | Scale replicas to 0 during off-hours, restore during business hours |
-| CronJobs | batch | get, list, watch, patch, update | Suspend/unsuspend scheduled jobs |
-| HorizontalPodAutoscalers | autoscaling | get, list, watch, update, patch | Disable scale-up during downscale to prevent fight-back, restore on upscale |
-| Namespaces | core | get, list, watch | Discover namespaces for namespace selectors |
-| Events | core, events.k8s.io | create, patch | Record scaling events for observability (controller-runtime uses the `events.k8s.io` API group on modern clusters) |
+| Deployments | apps | get, list, watch, patch, update | Scale replicas to zero and restore them |
+| StatefulSets | apps | get, list, watch, patch, update | Scale replicas to zero and restore them |
+| CronJobs | batch | get, list, watch, patch, update | Suspend and resume scheduled jobs |
+| HorizontalPodAutoscalers | autoscaling | get, list, watch, update, patch | Disable HPA scale-up for the window, then restore it |
+| Namespaces | core | get, list, watch | Resolve namespace selectors |
+| Pods | core | get, list, watch | Check readiness during warmup, and find pods still terminating after a downscale |
+| Events | core, events.k8s.io | create, patch | Record scaling events. controller-runtime uses `events.k8s.io` on current clusters. |
 | LightsOutSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage cluster-scoped schedules |
-| LightsOutNamespaceSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage namespace-scoped schedules; global controller lists these to implement precedence |
-| Applications | argoproj.io | get, list, watch, update, patch | Label ArgoCD Application CRDs during scaling (optional, requires `rbac.argocd: true`) |
-| Kustomizations | kustomize.toolkit.fluxcd.io | get, list, watch, update, patch | Suspend/resume FluxCD Kustomization resources during scaling (optional, requires `rbac.fluxcd: true`) |
-| HelmReleases | helm.toolkit.fluxcd.io | get, list, watch, update, patch | Suspend/resume FluxCD HelmRelease resources during scaling (optional, requires `rbac.fluxcd: true`) |
+| LightsOutNamespaceSchedules | lightsout.techsupport.mk | get, list, watch, create, update, patch, delete | Manage namespace-scoped schedules, and let the cluster-wide controller apply precedence |
+| Applications | argoproj.io | get, list, watch, update, patch | Label ArgoCD Applications. Optional, needs `rbac.argocd: true`. |
+| Kustomizations | kustomize.toolkit.fluxcd.io | get, list, watch, update, patch | Suspend and resume Flux Kustomizations. Optional, needs `rbac.fluxcd: true`. |
+| HelmReleases | helm.toolkit.fluxcd.io | get, list, watch, update, patch | Suspend and resume Flux HelmReleases. Optional, needs `rbac.fluxcd: true`. |
 
-#### Why Cluster-Wide Access?
+The ClusterRole also grants `update` on the `finalizers` subresource of both schedule types, and `get`, `patch` and `update` on their `status` subresource. Both are needed for the cleanup finalizer and the status writes.
 
-LightsOut schedules can target workloads across multiple namespaces using label selectors and namespace selectors. To support this use case, the controller requires a `ClusterRole` rather than namespace-scoped `Roles`. This enables:
+Custom resource permissions are not in this table. The API groups are unknown until you declare them, so you list them yourself under `rbac.customResources`. For details, see [Custom resource integration](custom-resources.md).
 
-- A single schedule to manage workloads in `dev-*`, `staging-*`, or other namespace patterns
-- Organization-wide cost savings policies
-- Centralized schedule management
+### Why cluster-wide access
 
-The `LightsOutNamespaceScheduleReconciler` also runs with these cluster-wide permissions (it is part of the same operator process), but it constrains itself at runtime to only act on workloads in the namespace where the `LightsOutNamespaceSchedule` resource lives.
+One schedule targets many namespaces through a label selector, so the controller holds a `ClusterRole` rather than a `Role` per namespace. That is what lets a single schedule cover every `dev-*` namespace, including ones created after the install.
 
-#### Developer access for namespace-scoped schedules
+`LightsOutNamespaceScheduleReconciler` runs inside the same process and inherits the same permissions. It narrows itself at runtime and acts only on the namespace that holds its `LightsOutNamespaceSchedule`.
 
-The operator's `ClusterRole` covers what the controller itself needs. For developers to create `LightsOutNamespaceSchedule` resources in their own namespaces, a separate `Role` and `RoleBinding` granting `create`, `update`, `delete` on `lightsoutnamespaceschedules` (in the `lightsout.techsupport.mk` API group) must be provisioned in each namespace. The `get`, `list`, `watch` verbs are typically granted to any namespace member for observability.
+### Developer access to namespace schedules
 
-### Security Considerations
+The operator `ClusterRole` covers the controller alone. For a developer to create a `LightsOutNamespaceSchedule`, grant a `Role` and `RoleBinding` in their namespace with `create`, `update` and `delete` on `lightsoutnamespaceschedules` in the `lightsout.techsupport.mk` API group. Most clusters grant `get`, `list` and `watch` to every namespace member as well.
 
-**Risks:**
-- The controller has write access to all Deployments, StatefulSets, and CronJobs cluster-wide
-- When ArgoCD integration is enabled, the controller can modify labels on ArgoCD Application CRDs
-- When FluxCD integration is enabled, the controller can set `spec.suspend` on FluxCD Kustomization and HelmRelease resources cluster-wide
-- A misconfigured schedule could inadvertently scale down production workloads
-- Compromised controller credentials could be used to disrupt services
+## Risks
 
-**Mitigations:**
-- Use namespace selectors and label selectors to precisely target workloads
-- Exclude critical namespaces (e.g., `kube-system`, `monitoring`) from schedules
-- Review `LightsOutSchedule` and `LightsOutNamespaceSchedule` resources carefully before applying
-- Use Kubernetes RBAC to restrict who can create/modify cluster-scoped schedules (see `lightsoutschedule_editor_role.yaml`)
-- Use namespace-scoped `Role`/`RoleBinding` to control which developers can create `LightsOutNamespaceSchedule` in each namespace
-- Monitor controller logs and events for unexpected scaling operations
-- Use the admission webhooks (when enabled) to validate schedules before creation
+- The controller can write to every Deployment, StatefulSet and CronJob on the cluster.
+- With the ArgoCD integration on, it can modify labels on any ArgoCD Application.
+- With the FluxCD integration on, it can set `spec.suspend` on any Kustomization and HelmRelease.
+- A schedule with too wide a selector can scale down production workloads.
+- Stolen controller credentials can take services down on a schedule that looks legitimate.
 
-**Best Practices:**
-1. Start with a narrow scope (specific namespace, specific labels) before expanding
-2. Use `excludeLabels` to protect critical workloads and `excludeNamespaces` to protect entire namespaces
-3. Test schedules in non-production environments first
-4. Set up alerts for scaling events in your monitoring stack
+## Mitigations
+
+- Target workloads precisely, through namespace selectors and label selectors.
+- Exclude the namespaces that must never stop, such as `kube-system` and your monitoring stack.
+- Read a schedule before you apply it, and check which namespaces the selector resolves to.
+- Restrict who can create a cluster-scoped schedule. See `config/rbac/lightsoutschedule_editor_role.yaml`.
+- Control per namespace who can create a `LightsOutNamespaceSchedule`, through a `Role` and `RoleBinding`.
+- Watch the controller logs and the Kubernetes events for scaling you did not expect.
+- Run the admission webhooks, so an invalid schedule never reaches the cluster.
+
+## Practices worth following
+
+1. Start narrow, with one namespace and one label, then widen.
+2. Protect critical workloads with `excludeLabels`, and whole namespaces with `excludeNamespaces`.
+3. Run a schedule somewhere harmless first, through one full down-and-up cycle.
+4. Alert on `lightsout_scaling_errors_total` and on `lightsout_stuck_terminating_pods`.
