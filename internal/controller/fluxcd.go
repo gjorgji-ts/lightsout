@@ -163,22 +163,20 @@ func SuspendFluxResource(
 		return true, nil
 	}
 
-	// Clear warming-up annotation if transitioning back to down mid-warmup
-	annotations := obj.GetAnnotations()
-	if annotations != nil {
-		delete(annotations, constants.WarmingUpSinceAnnotation)
-		obj.SetAnnotations(annotations)
-	}
-
-	labels[constants.StateLabel] = constants.StateDown
-	labels[constants.ManagedByLabel] = scheduleName
-	obj.SetLabels(labels)
-
-	if err := unstructured.SetNestedField(obj.Object, true, "spec", "suspend"); err != nil {
-		return false, err
-	}
-
-	if err := c.Update(ctx, obj); err != nil {
+	// This patches rather than updates. The resource comes from a List, and the Flux
+	// controllers rewrite its status continuously. The copy in hand is therefore often
+	// one version behind, and Update fails with "the object has been modified". A merge
+	// patch carries no resourceVersion, so it cannot conflict, and a null value removes
+	// a key. Only spec.suspend and our own metadata change here.
+	// Clears the warming-up annotation if this transitions back to down mid-warmup.
+	if err := applyMergePatch(ctx, c, obj, objectPatch{
+		SetLabels: map[string]string{
+			constants.StateLabel:     constants.StateDown,
+			constants.ManagedByLabel: scheduleName,
+		},
+		RemoveAnnotations: []string{constants.WarmingUpSinceAnnotation},
+		Spec:              map[string]any{fieldSuspend: true},
+	}); err != nil {
 		return false, err
 	}
 
@@ -210,18 +208,15 @@ func TransitionFluxResourceToWarmingUp(
 		return true, nil
 	}
 
-	labels[constants.StateLabel] = constants.StateWarmingUp
-	labels[constants.ManagedByLabel] = scheduleName
-	obj.SetLabels(labels)
-
-	annotations := obj.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-	annotations[constants.WarmingUpSinceAnnotation] = now.UTC().Format(time.RFC3339)
-	obj.SetAnnotations(annotations)
-
-	if err := c.Update(ctx, obj); err != nil {
+	if err := applyMergePatch(ctx, c, obj, objectPatch{
+		SetLabels: map[string]string{
+			constants.StateLabel:     constants.StateWarmingUp,
+			constants.ManagedByLabel: scheduleName,
+		},
+		SetAnnotations: map[string]string{
+			constants.WarmingUpSinceAnnotation: now.UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
 		return false, err
 	}
 
@@ -232,24 +227,11 @@ func TransitionFluxResourceToWarmingUp(
 func CompleteFluxWarmup(ctx context.Context, c client.Client, obj *unstructured.Unstructured) error {
 	logger := log.FromContext(ctx).WithValues("flux-resource", obj.GetName(), "namespace", obj.GetNamespace())
 
-	labels := obj.GetLabels()
-	if labels != nil {
-		delete(labels, constants.StateLabel)
-		delete(labels, constants.ManagedByLabel)
-		obj.SetLabels(labels)
-	}
-
-	annotations := obj.GetAnnotations()
-	if annotations != nil {
-		delete(annotations, constants.WarmingUpSinceAnnotation)
-		obj.SetAnnotations(annotations)
-	}
-
-	if err := unstructured.SetNestedField(obj.Object, false, "spec", "suspend"); err != nil {
-		return err
-	}
-
-	if err := c.Update(ctx, obj); err != nil {
+	if err := applyMergePatch(ctx, c, obj, objectPatch{
+		RemoveAnnotations: []string{constants.WarmingUpSinceAnnotation},
+		RemoveLabels:      []string{constants.StateLabel, constants.ManagedByLabel},
+		Spec:              map[string]any{fieldSuspend: false},
+	}); err != nil {
 		return err
 	}
 
@@ -278,21 +260,11 @@ func ResumeFluxResource(
 		return true, nil
 	}
 
-	delete(labels, constants.StateLabel)
-	delete(labels, constants.ManagedByLabel)
-	obj.SetLabels(labels)
-
-	annotations := obj.GetAnnotations()
-	if annotations != nil {
-		delete(annotations, constants.WarmingUpSinceAnnotation)
-		obj.SetAnnotations(annotations)
-	}
-
-	if err := unstructured.SetNestedField(obj.Object, false, "spec", "suspend"); err != nil {
-		return false, err
-	}
-
-	if err := c.Update(ctx, obj); err != nil {
+	if err := applyMergePatch(ctx, c, obj, objectPatch{
+		RemoveAnnotations: []string{constants.WarmingUpSinceAnnotation},
+		RemoveLabels:      []string{constants.StateLabel, constants.ManagedByLabel},
+		Spec:              map[string]any{fieldSuspend: false},
+	}); err != nil {
 		return false, err
 	}
 

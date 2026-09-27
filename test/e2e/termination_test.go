@@ -54,8 +54,8 @@ import (
 // the positive path instead, driving the real reconcile loop through the same
 // sequence.
 //
-// The case guarded here is the one that would hurt in production. An alert that
-// fires on every nightly downscale is worse than no alert at all.
+// The case guarded here is the more damaging one. An alert that fires on every
+// nightly downscale is worse than no alert at all.
 var _ = Describe("Stuck Termination", Ordered, func() {
 	const (
 		scheduleNamespace = "lightsout-system"

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/gjorgji-ts/lightsout/security/advisories/new
+    about: Report it privately. Do not open a public issue.
+  - name: Report a code of conduct violation
+    url: https://github.com/gjorgji-ts/lightsout/security/advisories/new
+    about: Open a private advisory. Only maintainers can see it.
+  - name: Documentation
+    url: https://github.com/gjorgji-ts/lightsout#documentation
+    about: Setup, the integrations, the security model, and per-operator recipes.

@@ -114,19 +114,21 @@ func LabelArgoCDAppDown(ctx context.Context, c client.Client, app *unstructured.
 		return true, nil
 	}
 
-	labels[constants.StateLabel] = constants.StateDown
-	labels[constants.ManagedByLabel] = scheduleName
-	app.SetLabels(labels)
-
-	// Clean up any warming-up-since annotation left from a previous upscale cycle
-	// (edge case: downscale fires while the app is still in warming-up state)
-	annotations := app.GetAnnotations()
-	if annotations != nil {
-		delete(annotations, constants.WarmingUpSinceAnnotation)
-		app.SetAnnotations(annotations)
-	}
-
-	if err := c.Update(ctx, app); err != nil {
+	// This patches rather than updates. The Application comes from a List, and ArgoCD
+	// rewrites Application status on every reconcile. The copy in hand is therefore
+	// often one version behind, and Update fails with "the object has been modified".
+	// A merge patch carries no resourceVersion, so it cannot conflict, and a null
+	// value removes a key. Only metadata changes here, so a patch is sufficient.
+	// The warming-up-since removal is why this builds the patch rather than diffing a
+	// copy: a downscale can fire while the app is still warming up, and that annotation
+	// may be the only one on the Application.
+	if err := applyMergePatch(ctx, c, app, objectPatch{
+		SetLabels: map[string]string{
+			constants.StateLabel:     constants.StateDown,
+			constants.ManagedByLabel: scheduleName,
+		},
+		RemoveAnnotations: []string{constants.WarmingUpSinceAnnotation},
+	}); err != nil {
 		return false, err
 	}
 
@@ -154,11 +156,9 @@ func RemoveArgoCDAppLabels(ctx context.Context, c client.Client, app *unstructur
 		return true, nil
 	}
 
-	delete(labels, constants.StateLabel)
-	delete(labels, constants.ManagedByLabel)
-	app.SetLabels(labels)
-
-	if err := c.Update(ctx, app); err != nil {
+	if err := applyMergePatch(ctx, c, app, objectPatch{
+		RemoveLabels: []string{constants.StateLabel, constants.ManagedByLabel},
+	}); err != nil {
 		return false, err
 	}
 
@@ -190,18 +190,15 @@ func LabelArgoCDAppWarmingUp(ctx context.Context, c client.Client, app *unstruct
 		return true, nil
 	}
 
-	labels[constants.StateLabel] = constants.StateWarmingUp
-	labels[constants.ManagedByLabel] = scheduleName
-	app.SetLabels(labels)
-
-	annotations := app.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-	annotations[constants.WarmingUpSinceAnnotation] = now.UTC().Format(time.RFC3339)
-	app.SetAnnotations(annotations)
-
-	if err := c.Update(ctx, app); err != nil {
+	if err := applyMergePatch(ctx, c, app, objectPatch{
+		SetLabels: map[string]string{
+			constants.StateLabel:     constants.StateWarmingUp,
+			constants.ManagedByLabel: scheduleName,
+		},
+		SetAnnotations: map[string]string{
+			constants.WarmingUpSinceAnnotation: now.UTC().Format(time.RFC3339),
+		},
+	}); err != nil {
 		return false, err
 	}
 
@@ -439,20 +436,10 @@ func handleArgoCDWarmup(
 func CompleteArgoCDWarmup(ctx context.Context, c client.Client, app *unstructured.Unstructured) error {
 	logger := log.FromContext(ctx).WithValues("argocd-app", app.GetName())
 
-	labels := app.GetLabels()
-	if labels != nil {
-		delete(labels, constants.StateLabel)
-		delete(labels, constants.ManagedByLabel)
-		app.SetLabels(labels)
-	}
-
-	annotations := app.GetAnnotations()
-	if annotations != nil {
-		delete(annotations, constants.WarmingUpSinceAnnotation)
-		app.SetAnnotations(annotations)
-	}
-
-	if err := c.Update(ctx, app); err != nil {
+	if err := applyMergePatch(ctx, c, app, objectPatch{
+		RemoveAnnotations: []string{constants.WarmingUpSinceAnnotation},
+		RemoveLabels:      []string{constants.StateLabel, constants.ManagedByLabel},
+	}); err != nil {
 		return err
 	}
 	logger.Info("completed warming-up, removed labels from ArgoCD app")

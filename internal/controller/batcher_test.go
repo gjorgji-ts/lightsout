@@ -24,6 +24,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
@@ -295,5 +296,54 @@ func TestScaleWorkloads_StatsClearOnUpscale(t *testing.T) {
 	}
 	if result.stats.DeploymentsScaled != 0 {
 		t.Errorf("expected 0 deployments scaled after upscale, got %d", result.stats.DeploymentsScaled)
+	}
+}
+
+// Ownership transfer writes to workloads that came from a List, so the copy in hand
+// can be stale here in the same way it is in the scaler.
+func TestCollectNamespaceDeployments_StaleCopyTransfersOwnership(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+
+	deploy := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web",
+			Namespace: "dev",
+			Labels:    map[string]string{constants.ManagedByLabel: "global-schedule"},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
+	ctx := context.Background()
+
+	fresh := &appsv1.Deployment{}
+	if err := fakeClient.Get(ctx, client.ObjectKey{Namespace: "dev", Name: "web"}, fresh); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	bumpResourceVersion(t, fakeClient, fresh)
+
+	// collectNamespaceDeployments Lists internally, but the List result is already a
+	// version behind once the owning operator writes again before the transfer lands.
+	core := &lightsoutv1alpha1.LightsOutScheduleCore{}
+	workloads, err := collectNamespaceDeployments(ctx, fakeClient, "dev", core, "ns-schedule", true)
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	if len(workloads) != 1 {
+		t.Fatalf("collected %d workloads, want 1 (a failed transfer is skipped)", len(workloads))
+	}
+
+	got := &appsv1.Deployment{}
+	if err := fakeClient.Get(ctx, client.ObjectKey{Namespace: "dev", Name: "web"}, got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Labels[constants.ManagedByLabel] != "ns-schedule" {
+		t.Errorf("managed-by label = %q, want ns-schedule", got.Labels[constants.ManagedByLabel])
+	}
+	if got.Annotations[constants.ManagedByAnnotation] != "ns-schedule" {
+		t.Errorf("managed-by annotation = %q, want ns-schedule", got.Annotations[constants.ManagedByAnnotation])
+	}
+	if got.Labels["operator-touched"] != "yes" {
+		t.Error("transfer clobbered the operator's concurrent write")
 	}
 }

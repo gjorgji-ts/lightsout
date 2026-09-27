@@ -1,31 +1,35 @@
-name: Feature Request
-description: Suggest a new feature or improvement
+name: Feature request
+description: Suggest a feature or a change
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the [open issues](https://github.com/gjorgji-ts/lightsout/issues) first, to avoid a duplicate.
+
   - type: textarea
     id: problem
     attributes:
       label: What problem does this solve?
-      description: Describe the use case or pain point.
+      description: Describe the situation you hit, not the feature you want. What did you try, and where did it stop?
     validations:
       required: true
 
   - type: textarea
     id: solution
     attributes:
-      label: Proposed solution
-      description: What would you like to see added or changed?
+      label: What would you like it to do?
     validations:
       required: true
 
   - type: textarea
     id: alternatives
     attributes:
-      label: Alternatives considered
-      description: Any workarounds you've tried or other approaches you considered.
+      label: What did you try instead?
+      description: Workarounds, other tools, or approaches you rejected and why.
 
   - type: textarea
     id: context
     attributes:
-      label: Additional context
-      description: Links, screenshots, related issues, etc.
+      label: Anything else
+      description: Links, manifests, related issues.

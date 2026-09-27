@@ -98,17 +98,20 @@ func scaleDeploymentDown(ctx context.Context, c client.Client, deploy *appsv1.De
 		logger.Error(hpaErr, "failed to patch HPA for downscale, continuing")
 	}
 
-	// Scale down
-	deploy.Annotations[constants.OriginalReplicasAnnotation] = strconv.Itoa(int(currentReplicas))
-	deploy.Annotations[constants.ManagedByAnnotation] = scheduleName
-	if deploy.Labels == nil {
-		deploy.Labels = make(map[string]string)
-	}
-	deploy.Labels[constants.ManagedByLabel] = scheduleName
-	zero := int32(0)
-	deploy.Spec.Replicas = &zero
-
-	if err := c.Update(ctx, deploy); err != nil {
+	// Scale down.
+	//
+	// This patches rather than updates. The workload comes from a List, and an
+	// operator that owns it rewrites its status continuously. The copy in hand is
+	// therefore often one version behind, and Update fails with "the object has been
+	// modified". A merge patch carries no resourceVersion, so it cannot conflict.
+	if err := applyMergePatch(ctx, c, deploy, objectPatch{
+		SetAnnotations: map[string]string{
+			constants.OriginalReplicasAnnotation: strconv.Itoa(int(currentReplicas)),
+			constants.ManagedByAnnotation:        scheduleName,
+		},
+		SetLabels: map[string]string{constants.ManagedByLabel: scheduleName},
+		Spec:      map[string]any{fieldReplicas: 0},
+	}); err != nil {
 		return nil, err
 	}
 
@@ -150,12 +153,11 @@ func scaleDeploymentUp(ctx context.Context, c client.Client, deploy *appsv1.Depl
 		return nil, fmt.Errorf("original replicas value %d overflows int32", replicas)
 	}
 	replicasInt32 := int32(replicas)
-	deploy.Spec.Replicas = &replicasInt32
-	delete(deploy.Annotations, constants.OriginalReplicasAnnotation)
-	delete(deploy.Annotations, constants.ManagedByAnnotation)
-	delete(deploy.Labels, constants.ManagedByLabel)
-
-	if err := c.Update(ctx, deploy); err != nil {
+	if err := applyMergePatch(ctx, c, deploy, objectPatch{
+		RemoveAnnotations: []string{constants.OriginalReplicasAnnotation, constants.ManagedByAnnotation},
+		RemoveLabels:      []string{constants.ManagedByLabel},
+		Spec:              map[string]any{fieldReplicas: replicasInt32},
+	}); err != nil {
 		return nil, err
 	}
 
@@ -223,17 +225,15 @@ func scaleStatefulSetDown(ctx context.Context, c client.Client, sts *appsv1.Stat
 		logger.Error(hpaErr, "failed to patch HPA for downscale, continuing")
 	}
 
-	// Scale down
-	sts.Annotations[constants.OriginalReplicasAnnotation] = strconv.Itoa(int(currentReplicas))
-	sts.Annotations[constants.ManagedByAnnotation] = scheduleName
-	if sts.Labels == nil {
-		sts.Labels = make(map[string]string)
-	}
-	sts.Labels[constants.ManagedByLabel] = scheduleName
-	zero := int32(0)
-	sts.Spec.Replicas = &zero
-
-	if err := c.Update(ctx, sts); err != nil {
+	// Scale down. Patched rather than updated, for the reason given in scaleDeploymentDown.
+	if err := applyMergePatch(ctx, c, sts, objectPatch{
+		SetAnnotations: map[string]string{
+			constants.OriginalReplicasAnnotation: strconv.Itoa(int(currentReplicas)),
+			constants.ManagedByAnnotation:        scheduleName,
+		},
+		SetLabels: map[string]string{constants.ManagedByLabel: scheduleName},
+		Spec:      map[string]any{fieldReplicas: 0},
+	}); err != nil {
 		return nil, err
 	}
 
@@ -275,12 +275,11 @@ func scaleStatefulSetUp(ctx context.Context, c client.Client, sts *appsv1.Statef
 		return nil, fmt.Errorf("original replicas value %d overflows int32", replicas)
 	}
 	replicasInt32 := int32(replicas)
-	sts.Spec.Replicas = &replicasInt32
-	delete(sts.Annotations, constants.OriginalReplicasAnnotation)
-	delete(sts.Annotations, constants.ManagedByAnnotation)
-	delete(sts.Labels, constants.ManagedByLabel)
-
-	if err := c.Update(ctx, sts); err != nil {
+	if err := applyMergePatch(ctx, c, sts, objectPatch{
+		RemoveAnnotations: []string{constants.OriginalReplicasAnnotation, constants.ManagedByAnnotation},
+		RemoveLabels:      []string{constants.ManagedByLabel},
+		Spec:              map[string]any{fieldReplicas: replicasInt32},
+	}); err != nil {
 		return nil, err
 	}
 
@@ -371,17 +370,15 @@ func scaleCronJobDown(ctx context.Context, c client.Client, cj *batchv1.CronJob,
 		return &ScaleResult{Skipped: true, SkipReason: "suspended by user"}, nil
 	}
 
-	// Suspend the cronjob
-	cj.Annotations[constants.OriginalSuspendAnnotation] = constants.SuspendedByLightsOut
-	cj.Annotations[constants.ManagedByAnnotation] = scheduleName
-	if cj.Labels == nil {
-		cj.Labels = make(map[string]string)
-	}
-	cj.Labels[constants.ManagedByLabel] = scheduleName
-	suspend := true
-	cj.Spec.Suspend = &suspend
-
-	if err := c.Update(ctx, cj); err != nil {
+	// Suspend the cronjob. Patched rather than updated, for the reason given in scaleDeploymentDown.
+	if err := applyMergePatch(ctx, c, cj, objectPatch{
+		SetAnnotations: map[string]string{
+			constants.OriginalSuspendAnnotation: constants.SuspendedByLightsOut,
+			constants.ManagedByAnnotation:       scheduleName,
+		},
+		SetLabels: map[string]string{constants.ManagedByLabel: scheduleName},
+		Spec:      map[string]any{fieldSuspend: true},
+	}); err != nil {
 		return nil, err
 	}
 
@@ -397,8 +394,9 @@ func scaleCronJobUp(ctx context.Context, c client.Client, cj *batchv1.CronJob, s
 
 	// If suspended without annotation, mark as user-owned and skip
 	if isSuspended && originalSuspend == "" {
-		cj.Annotations[constants.OriginalSuspendAnnotation] = constants.SuspendedByUser
-		if err := c.Update(ctx, cj); err != nil {
+		if err := applyMergePatch(ctx, c, cj, objectPatch{
+			SetAnnotations: map[string]string{constants.OriginalSuspendAnnotation: constants.SuspendedByUser},
+		}); err != nil {
 			return nil, err
 		}
 		logger.Info("marked cronjob as user-suspended")
@@ -424,13 +422,11 @@ func scaleCronJobUp(ctx context.Context, c client.Client, cj *batchv1.CronJob, s
 	}
 
 	// Resume the cronjob
-	suspend := false
-	cj.Spec.Suspend = &suspend
-	delete(cj.Annotations, constants.OriginalSuspendAnnotation)
-	delete(cj.Annotations, constants.ManagedByAnnotation)
-	delete(cj.Labels, constants.ManagedByLabel)
-
-	if err := c.Update(ctx, cj); err != nil {
+	if err := applyMergePatch(ctx, c, cj, objectPatch{
+		RemoveAnnotations: []string{constants.OriginalSuspendAnnotation, constants.ManagedByAnnotation},
+		RemoveLabels:      []string{constants.ManagedByLabel},
+		Spec:              map[string]any{fieldSuspend: false},
+	}); err != nil {
 		return nil, err
 	}
 

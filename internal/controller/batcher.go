@@ -248,12 +248,13 @@ func collectNamespaceDeployments(ctx context.Context, c client.Client, ns string
 		if transferOwnership {
 			if existingOwner := deploy.Labels[constants.ManagedByLabel]; existingOwner != "" && existingOwner != scheduleName {
 				logger.Info("transferring deployment ownership to namespace schedule", "deployment", deploy.Name, "from", existingOwner)
-				if deploy.Annotations == nil {
-					deploy.Annotations = make(map[string]string)
-				}
-				deploy.Annotations[constants.ManagedByAnnotation] = scheduleName
-				deploy.Labels[constants.ManagedByLabel] = scheduleName
-				if updateErr := c.Update(ctx, deploy); updateErr != nil {
+				// This patches rather than updates. The workload comes from a List, and
+				// an owning operator may have changed its resourceVersion since. Only our
+				// own metadata changes, so a merge patch is sufficient and cannot conflict.
+				if updateErr := applyMergePatch(ctx, c, deploy, objectPatch{
+					SetAnnotations: map[string]string{constants.ManagedByAnnotation: scheduleName},
+					SetLabels:      map[string]string{constants.ManagedByLabel: scheduleName},
+				}); updateErr != nil {
 					logger.Error(updateErr, "failed to transfer deployment ownership, skipping", "deployment", deploy.Name)
 					continue
 				}
@@ -288,12 +289,10 @@ func collectNamespaceStatefulSets(ctx context.Context, c client.Client, ns strin
 		if transferOwnership {
 			if existingOwner := sts.Labels[constants.ManagedByLabel]; existingOwner != "" && existingOwner != scheduleName {
 				logger.Info("transferring statefulset ownership to namespace schedule", "statefulset", sts.Name, "from", existingOwner)
-				if sts.Annotations == nil {
-					sts.Annotations = make(map[string]string)
-				}
-				sts.Annotations[constants.ManagedByAnnotation] = scheduleName
-				sts.Labels[constants.ManagedByLabel] = scheduleName
-				if updateErr := c.Update(ctx, sts); updateErr != nil {
+				if updateErr := applyMergePatch(ctx, c, sts, objectPatch{
+					SetAnnotations: map[string]string{constants.ManagedByAnnotation: scheduleName},
+					SetLabels:      map[string]string{constants.ManagedByLabel: scheduleName},
+				}); updateErr != nil {
 					logger.Error(updateErr, "failed to transfer statefulset ownership, skipping", "statefulset", sts.Name)
 					continue
 				}
@@ -328,12 +327,10 @@ func collectNamespaceCronJobs(ctx context.Context, c client.Client, ns string, c
 		if transferOwnership {
 			if existingOwner := cj.Labels[constants.ManagedByLabel]; existingOwner != "" && existingOwner != scheduleName {
 				logger.Info("transferring cronjob ownership to namespace schedule", "cronjob", cj.Name, "from", existingOwner)
-				if cj.Annotations == nil {
-					cj.Annotations = make(map[string]string)
-				}
-				cj.Annotations[constants.ManagedByAnnotation] = scheduleName
-				cj.Labels[constants.ManagedByLabel] = scheduleName
-				if updateErr := c.Update(ctx, cj); updateErr != nil {
+				if updateErr := applyMergePatch(ctx, c, cj, objectPatch{
+					SetAnnotations: map[string]string{constants.ManagedByAnnotation: scheduleName},
+					SetLabels:      map[string]string{constants.ManagedByLabel: scheduleName},
+				}); updateErr != nil {
 					logger.Error(updateErr, "failed to transfer cronjob ownership, skipping", "cronjob", cj.Name)
 					continue
 				}

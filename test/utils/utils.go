@@ -101,7 +101,7 @@ func InstallCertManager() error {
 }
 
 // IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed
-// by verifying the existence of key CRDs related to Cert Manager.
+// by checking for the CRDs that Cert Manager installs.
 func IsCertManagerCRDsInstalled() bool {
 	// List of common Cert Manager CRDs
 	certManagerCRDs := []string{
