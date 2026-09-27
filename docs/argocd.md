@@ -1,20 +1,20 @@
-# ArgoCD Integration
+# ArgoCD integration
 
-LightsOut can optionally label ArgoCD Application CRDs during scaling operations so that ArgoCD UIs and notifications reflect intentional downscale states. This prevents false "Degraded" or "OutOfSync" alerts when workloads are scaled to zero during off-hours.
+LightsOut can label ArgoCD Application CRDs while it scales. The ArgoCD UI and your notification rules then tell an intentional downscale from a real failure.
 
-## The Problem
+## The problem
 
-When LightsOut scales Deployments to zero replicas, ArgoCD sees a mismatch between the desired state (defined in Git) and the live state (0 replicas). This causes ArgoCD to report the application as degraded or out of sync, which generates noise in dashboards and alert channels.
+ArgoCD compares the live cluster against Git. A Deployment at zero replicas is a mismatch, so ArgoCD reports the Application as `Degraded` and `OutOfSync`. That fills dashboards and alert channels with noise every evening.
 
-## The Solution
+Worse, an Application with `selfHeal` enabled reverts the downscale within a reconcile interval, and the schedule still reports success.
 
-When `spec.argoCD` is set on a schedule, LightsOut labels matching ArgoCD Application CRDs with metadata that signals the downscale is intentional. ArgoCD notification templates and dashboard filters can then use these labels to suppress or annotate alerts for applications that are in a known downscaled state.
+## The solution
 
-LightsOut does **not** scale ArgoCD Applications themselves. ArgoCD Applications are declarative descriptors, not running workloads. The actual scaling continues to happen at the Deployment/StatefulSet/CronJob level.
+When a schedule carries `spec.argoCD`, LightsOut labels the matching Applications to mark the downscale as intentional. Your notification triggers and dashboard filters read those labels.
+
+LightsOut does not scale ArgoCD Applications. An Application is a descriptor, not a running workload. The scaling happens on the Deployments, StatefulSets and CronJobs underneath.
 
 ## Configuration
-
-Add the `argoCD` field to your schedule:
 
 ```yaml
 apiVersion: lightsout.techsupport.mk/v1alpha1
@@ -28,28 +28,26 @@ spec:
   namespaceSelector:
     matchLabels:
       environment: dev
-  argoCD:                      # presence of this block enables the feature
-    namespace: argocd          # defaults to "argocd" if omitted
-    warmupTimeout: 10m         # defaults to 10m if omitted
+  argoCD:
+    namespace: argocd          # where the Application CRDs live
+    warmupTimeout: 10m         # cap on the wait for pod readiness
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `argoCD` | object | `nil` (disabled) | When present, enables ArgoCD integration |
-| `argoCD.namespace` | string | `argocd` | Namespace where ArgoCD Application CRDs live |
-| `argoCD.warmupTimeout` | duration | `10m` | How long to keep the `warming-up` label after upscale before removing it regardless of pod readiness |
+| `argoCD` | object | `nil` (disabled) | Enables the integration when present |
+| `argoCD.namespace` | string | `argocd` | Namespace that holds the Application CRDs |
+| `argoCD.warmupTimeout` | duration | `10m` | How long to keep the `warming-up` label after an upscale before removing it, whatever the pod state |
 
-Setting `argoCD` to any value (even `{}`) enables the feature. Omitting it entirely disables it.
+Any value enables the feature, including `{}`. Omitting the field disables it.
 
-## ArgoCD-Side Configuration
+## Configuration on the ArgoCD side
 
-LightsOut labels ArgoCD Application CRDs to signal downscale state, but ArgoCD also needs configuration changes to prevent drift detection on the fields LightsOut modifies on workloads.
+The labels handle alerts. They do not stop ArgoCD from detecting drift on the workloads, and they do not stop a sync from undoing the downscale. Both need configuration in ArgoCD itself.
 
-### `ignoreDifferences` for Workload Fields
+### `ignoreDifferences` for workload fields
 
-When LightsOut scales a Deployment to 0 replicas, ArgoCD compares the live state against Git and sees a mismatch. The labels on Application CRDs help with notification suppression and UI filtering, but they do not prevent ArgoCD from detecting drift on the workloads themselves. You need `ignoreDifferences` for that.
-
-Add these to your ArgoCD ConfigMap (`argocd-cm`) or Helm values:
+Add these to `argocd-cm`, or to your ArgoCD Helm values:
 
 ```yaml
 resource.customizations.ignoreDifferences.apps_Deployment: |
@@ -74,11 +72,12 @@ resource.customizations.ignoreDifferences.batch_CronJob: |
     - /metadata/labels/lightsout.techsupport.mk~1managed-by
 ```
 
-> **Note:** `~1` is the JSON Pointer (RFC 6901) escape for `/` in key names.
+> [!NOTE]
+> `~1` is the JSON Pointer escape for `/` inside a key name. See RFC 6901.
 
-`managed-by` appears twice in each list. LightsOut writes this key as a label and as an annotation on every workload it manages. These are two different metadata fields, so each one needs its own pointer. If you ignore only the label, the annotation still shows as drift.
+`managed-by` appears twice in each list. LightsOut writes that key as a label and as an annotation on every workload it manages. They are two different metadata fields, so each needs its own pointer. Ignore only the label, and the annotation still shows as drift.
 
-Add the HPA kind if a HorizontalPodAutoscaler targets any of your workloads. During downscale, LightsOut sets `spec.behavior.scaleUp.selectPolicy` to `Disabled` and records the previous value in an annotation. For more information, see [HPA integration](hpa.md).
+Add the HPA kind when a HorizontalPodAutoscaler targets any of your workloads. LightsOut sets `spec.behavior.scaleUp.selectPolicy` to `Disabled` for the window, and records the previous value in an annotation:
 
 ```yaml
 resource.customizations.ignoreDifferences.autoscaling_HorizontalPodAutoscaler: |
@@ -88,11 +87,11 @@ resource.customizations.ignoreDifferences.autoscaling_HorizontalPodAutoscaler: |
     - /metadata/annotations/lightsout.techsupport.mk~1managed-by
 ```
 
-Without this entry, ArgoCD restores `selectPolicy` during the downscale. The HPA then returns the workload to its original replica count, and the schedule still reports success.
+Without that entry ArgoCD restores `selectPolicy` mid-window, the HPA returns the workload to its original replica count, and the schedule still reports success. For more information, see [HPA integration](hpa.md).
 
-### `ignoreDifferences` for Application CRDs (App-of-Apps)
+### `ignoreDifferences` for Application CRDs
 
-If your ArgoCD Applications are themselves managed by ArgoCD (app-of-apps pattern), the metadata LightsOut adds to Application CRDs is also drift from Git's perspective. Add:
+Applications managed by ArgoCD itself, in the app-of-apps pattern, carry drift of their own, because the labels LightsOut writes are not in Git:
 
 ```yaml
 resource.customizations.ignoreDifferences.argoproj.io_Application: |
@@ -102,15 +101,15 @@ resource.customizations.ignoreDifferences.argoproj.io_Application: |
     - /metadata/annotations/lightsout.techsupport.mk~1warming-up-since
 ```
 
-LightsOut writes the `warming-up-since` annotation on every upscale and removes it when warmup completes. Without the third pointer, the parent Application reports OutOfSync for the length of each warmup window.
+LightsOut writes `warming-up-since` on every upscale and removes it when warmup completes. Without that third pointer, the parent Application reports OutOfSync for the length of every warmup window.
 
-This is only needed if Applications are managed declaratively through Git. If you create Applications manually or they are not part of an app-of-apps hierarchy, you can skip this.
+Skip this if you create Applications by hand, or if they sit outside an app-of-apps hierarchy.
 
-### Suppressing the Degraded Health Status
+### Suppressing the Degraded health status
 
-`ignoreDifferences` covers sync status only. ArgoCD still runs its health check against a paused custom resource and reports the parent Application as `Degraded`. The LightsOut labels stop the notifications, but the UI still shows the Application as unhealthy.
+`ignoreDifferences` covers sync status only. ArgoCD still runs its health check against a paused custom resource and reports the parent Application as `Degraded`. The labels stop the notifications, but the UI still shows the Application as unhealthy.
 
-Add the ArgoCD annotation as an extra `setField` on the affected kinds. LightsOut then applies and removes it with the downscale:
+Add the ArgoCD annotation as an extra `setField` on the affected kinds, so LightsOut applies and removes it with the downscale:
 
 ```yaml
 customResources:
@@ -124,16 +123,21 @@ customResources:
         value: "true"
 ```
 
-LightsOut treats this annotation as any other captured field. The annotation is absent before the downscale and absent again after the upscale. Add the same pointer to the `ignoreDifferences` list for that kind.
+LightsOut treats this annotation as any other captured field. It is absent before the downscale and absent again after the upscale. Add the same pointer to the `ignoreDifferences` list for that kind.
 
-Do not use `resource.customizations.health.<group>_<kind>` with a Lua script that returns `Healthy` for LightsOut-labelled resources. That customization changes the health result for every resource of that kind in the cluster, including the resources that must still report `Degraded`. The annotation above applies only to the resources LightsOut turned off.
+Do not solve this with `resource.customizations.health.<group>_<kind>` and a Lua script that returns `Healthy` for LightsOut-labelled resources. That customization changes the health result for every resource of that kind on the cluster, including the ones that must still report `Degraded`. The annotation above reaches only the resources LightsOut turned off.
 
 > [!WARNING]
-> This annotation changes health reporting only. ArgoCD waits for hook completion, not for health, so `ignore-healthcheck` has no effect on hooks. A PreSync or Sync hook that needs a downscaled datastore blocks until the upscale. A Keycloak realm-import Job is the common case, because `instances: 0` removes the Keycloak that the Job needs. Exclude these hooks from downscaled namespaces, or do not sync those Applications during the downscale window.
+> This annotation changes health reporting and nothing else. ArgoCD waits for
+> hook completion rather than for health, so `ignore-healthcheck` has no effect
+> on a hook. A PreSync or Sync hook that needs a downscaled datastore blocks
+> until the upscale. A Keycloak realm-import Job is the common case, because
+> `instances: 0` removes the Keycloak the Job connects to. Keep such hooks out
+> of downscaled namespaces, or do not sync those Applications during the window.
 
-### `RespectIgnoreDifferences` Sync Option
+### The `RespectIgnoreDifferences` sync option
 
-By default, `ignoreDifferences` only suppresses the OutOfSync indicator in the UI - a sync operation will still overwrite LightsOut's changes. To prevent this, each Application must include:
+On its own, `ignoreDifferences` only hides the OutOfSync indicator in the UI. A sync still overwrites the downscale. Every Application needs this:
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -144,95 +148,87 @@ spec:
       - RespectIgnoreDifferences=true
 ```
 
-Without this, a manual sync or auto-sync will restore replicas back to the Git-defined value, undoing LightsOut's downscale.
+Without it, a manual sync or an auto-sync restores the Git replica count and undoes the downscale.
 
-## How It Works
+## How it works
 
 ### Discovery
 
-When ArgoCD integration is enabled, the reconciler:
+With the integration enabled, the reconciler:
 
-1. Lists all `argoproj.io/v1alpha1/Application` CRDs from the configured ArgoCD namespace
-2. Filters to applications whose `spec.destination.namespace` is in the schedule's resolved target namespaces
-3. Returns matched applications for labeling or unlabeling
+1. Lists the `argoproj.io/v1alpha1/Application` resources in the configured namespace.
+2. Keeps those whose `spec.destination.namespace` is one of the schedule's target namespaces.
+3. Returns the matches, for labelling or for cleanup.
 
-### Labels Applied
+### Labels
 
-LightsOut uses a three-state lifecycle on matching ArgoCD Application CRDs:
+A managed Application moves through three states:
 
 | State | `lightsout.techsupport.mk/state` | When |
 |-------|----------------------------------|------|
-| Downscaled | `down` | Workloads are at 0 replicas |
-| Warming up | `warming-up` | Workloads have been scaled back up but pods are not yet all Ready |
-| Up (normal) | _(absent)_ | All workloads are healthy; no labels present |
+| Downscaled | `down` | The workloads sit at zero replicas |
+| Warming up | `warming-up` | The workloads are back, but the pods are not ready |
+| Up | _(absent)_ | Every workload is healthy, and no labels remain |
 
-During downscale, LightsOut adds these labels to matching ArgoCD Application CRDs:
+The downscale writes two labels:
 
 | Label | Value | Purpose |
 |-------|-------|---------|
-| `lightsout.techsupport.mk/state` | `down` | Signals the application is intentionally downscaled |
-| `lightsout.techsupport.mk/managed-by` | `<schedule-name>` | Identifies which schedule manages this application |
+| `lightsout.techsupport.mk/state` | `down` | Marks the downscale as intentional |
+| `lightsout.techsupport.mk/managed-by` | `<schedule-name>` | Names the schedule that owns this Application |
 
-During upscale, the `state` label transitions to `warming-up` and the following annotation is added:
+The upscale moves `state` to `warming-up` and adds one annotation:
 
 | Annotation | Value | Purpose |
 |------------|-------|---------|
-| `lightsout.techsupport.mk/warming-up-since` | RFC3339 timestamp | Records when warming-up began; used to enforce `warmupTimeout` across controller restarts |
+| `lightsout.techsupport.mk/warming-up-since` | RFC3339 timestamp | Records when warmup began, so `warmupTimeout` survives a controller restart |
 
-Once all Deployments and StatefulSets in the target namespace have all their desired replicas ready - or the `warmupTimeout` elapses - both labels and the annotation are removed, leaving the Application CRD pristine.
+Once every Deployment and StatefulSet in the namespace has all its replicas ready, or `warmupTimeout` elapses, LightsOut removes both labels and the annotation. The Application returns to its original state.
 
-### Execution Ordering
+### Ordering
 
-Labels are applied and removed in a specific order relative to workload scaling to minimize the window where ArgoCD could fire false alerts:
+The order of the label writes against the scaling is what keeps the alert window shut.
 
-**Downscale:**
-1. Label ArgoCD apps as `down`
-2. Scale workloads to zero
+On downscale:
 
-**Upscale:**
-1. Scale workloads back up
-2. Transition ArgoCD apps from `down` → `warming-up` (adds `warming-up-since` timestamp)
-3. Requeue every 30 seconds to check pod readiness
-4. Once all pods are ready (or `warmupTimeout` elapses), remove all labels
+1. Label the Applications `down`.
+2. Scale the workloads to zero.
 
-This ordering ensures that:
-- On downscale, ArgoCD knows the app is being intentionally scaled down *before* pods disappear
-- On upscale, pods are fully running and ready *before* the suppression signal is removed, eliminating the false-alert window during pod startup
+On upscale:
 
-### Schedule Deletion
+1. Scale the workloads back up.
+2. Move the Applications to `warming-up`, and stamp `warming-up-since`.
+3. Check pod readiness every 30 seconds.
+4. Once the pods are ready, or `warmupTimeout` elapses, remove the labels.
 
-When a `LightsOutSchedule` or `LightsOutNamespaceSchedule` is deleted, the finalizer cleanup also removes any labels from ArgoCD Applications that were managed by that schedule. This uses the `managed-by` label for efficient lookup.
+ArgoCD therefore learns about the downscale before the pods disappear. On the way back, the pods are running and ready before the suppression signal goes away, which closes the window where startup looks like failure.
 
-## Graceful Degradation
+### Schedule deletion
 
-ArgoCD integration is designed to never block core functionality:
+The finalizer strips the labels from every Application the schedule managed before the resource goes away. It finds them through the `managed-by` label.
 
-- **ArgoCD not installed**: If the `argoproj.io/v1alpha1/Application` CRD does not exist on the cluster, discovery returns empty and scaling proceeds normally.
-- **ArgoCD labeling fails**: Errors are logged and emitted as Kubernetes warning events on the schedule, but workload scaling continues unblocked.
-- **ArgoCD integration disabled**: When `spec.argoCD` is `nil` (omitted), the feature is completely inactive with zero overhead.
+## Multi-schedule safety
 
-## Multi-Schedule Safety
+Each schedule manages only the Applications it labelled:
 
-If multiple schedules target overlapping namespaces, each schedule only manages ArgoCD Applications it has labeled:
+- LightsOut skips an Application another schedule already labelled.
+- LightsOut skips an Application this schedule already labelled, so repeats are idempotent.
+- Only the schedule that labelled an Application removes those labels.
 
-- An application already labeled by a different schedule is skipped
-- An application already labeled by the same schedule is skipped (idempotent)
-- Only the schedule that labeled an application can remove its labels
+## Using the labels
 
-## Using Labels in ArgoCD
+### Filtering in the UI
 
-### Filtering in ArgoCD UI
+Filter the Applications list by label to see what the schedule currently holds down:
 
-You can filter applications in the ArgoCD UI by label to see which apps are in a managed state:
-
-```
+```text
 lightsout.techsupport.mk/state=down
 lightsout.techsupport.mk/state=warming-up
 ```
 
-### Notification Triggers
+### Notification triggers
 
-ArgoCD notification triggers can check for the LightsOut label to suppress alerts during downscale and warmup. Add the label check to each trigger you want to suppress:
+Add the label check to every trigger you want silenced for the window:
 
 ```yaml
 trigger.on-health-degraded: |
@@ -255,21 +251,23 @@ trigger.on-progress-stuck: |
     send: [app-progress-stuck]
 ```
 
-When the label is absent (normal upscaled state), the expression evaluates the label as an empty string. `"" != "down"` and `"" != "warming-up"` are both `true`, so the trigger fires normally. During downscale or warmup the respective condition is `false` and the notification is suppressed.
+An absent label evaluates as an empty string. Both `"" != "down"` and `"" != "warming-up"` are true, so the trigger fires normally outside the window. During the downscale or the warmup one condition is false, and the notification stops.
 
-### Grafana / Prometheus
+A success trigger needs the same guard, which is easy to miss. An upscale passes through Healthy and Synced on the way back, and a deployment trigger fires for a release that never happened.
 
-If you export ArgoCD Application labels to Prometheus (e.g., via `argocd-metrics`), you can use the `state` label in Grafana queries to distinguish intentional downscale from real degradation.
+### Grafana and Prometheus
+
+If you export Application labels to Prometheus, through `argocd-metrics` or similar, query on the `state` label to separate an intentional downscale from real degradation.
 
 ## RBAC
 
-The ArgoCD integration requires these additional cluster-wide permissions:
+The integration needs these cluster-wide permissions:
 
-| Resource | API Group | Verbs |
+| Resource | API group | Verbs |
 |----------|-----------|-------|
 | Applications | argoproj.io | get, list, watch, update, patch |
 
-These permissions are **not** included by default. You must opt in by setting `rbac.argocd: true` in your Helm values:
+They are not granted by default. Opt in through your Helm values:
 
 ```yaml
 rbac:
@@ -277,4 +275,10 @@ rbac:
   argocd: true
 ```
 
-Without this, the controller will not have permission to list or label ArgoCD Application CRDs, and ArgoCD integration will silently fail even if `spec.argoCD` is set on a schedule. Errors are emitted as Kubernetes warning events on the schedule resource.
+Without them the controller cannot list or label Applications. The feature then fails quietly, even with `spec.argoCD` set, and reports warning events on the schedule.
+
+## Graceful degradation
+
+- **ArgoCD is not installed.** The `Application` CRD is absent, discovery returns empty, and scaling continues.
+- **A labelling call fails.** LightsOut logs the error and records a warning event on the schedule. Workload scaling never blocks on it.
+- **`spec.argoCD` is absent.** The feature is inactive and costs nothing.

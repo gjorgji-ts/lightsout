@@ -33,7 +33,7 @@ Each case asserts, in order:
 1. The operator provisions the expected pods.
 2. The target field starts at its expected value.
 3. After downscale, lightsout writes the off value and claims the resource with a `managed-by` label.
-4. **The operator removes its pods.** A failure here is a wrong recipe, not a lightsout bug.
+4. **The operator deletes its pods.** A failure here is a wrong recipe, not a lightsout bug.
 5. After upscale, lightsout restores the captured original value.
 6. **The operator rebuilds its pods.**
 7. Lightsout releases the resource once warmup completes.
@@ -49,7 +49,7 @@ The distinction matters. A pod stuck `Pending` satisfies a bare existence check,
 Ready-gating is off in two situations:
 
 - The pod never reaches Ready in this environment (Keycloak on `dev-file`).
-- No run confirms yet that it does (both StarRocks cases). FE readiness depends on the compute tier registering, and these are the slowest cases to re-run.
+- No run has checked yet that it does (both StarRocks cases). FE readiness depends on the compute tier registering, and these are the slowest cases to re-run.
 
 Turning it on for those is a one-line change.
 

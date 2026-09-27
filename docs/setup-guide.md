@@ -1,20 +1,22 @@
-# Setup Guide
+# Setup guide
 
 This guide covers two installation paths:
 
-1. **Basic** - controller only, no webhooks
-2. **With webhooks and cert-manager** - adds validation, defaulting, and overlap detection
+1. **Basic** - the controller alone, without webhooks
+2. **With webhooks and cert-manager** - adds validation, defaulting and overlap detection
 
 ## Prerequisites
 
-- Kubernetes cluster (v1.28+)
+- A Kubernetes cluster, v1.28 or later
 - [Helm](https://helm.sh/) v3
-- `kubectl` configured for your cluster
-- A node autoscaler like [Karpenter](https://karpenter.sh/) or [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler) (LightsOut scales workloads to zero, but you need a node autoscaler to deprovision the empty nodes and realize cost savings)
+- `kubectl` configured for the cluster
+- A node autoscaler, such as [Karpenter](https://karpenter.sh/) or [Cluster Autoscaler](https://github.com/kubernetes/autoscaler/tree/master/cluster-autoscaler)
 
-## Basic Install
+The autoscaler is not optional if you want the saving. LightsOut empties the workloads, and the autoscaler removes the nodes that billing follows.
 
-This installs the LightsOut controller without admission webhooks. Schedules will not be validated on creation - the controller will still work, but invalid cron expressions or misconfigurations won't be caught until reconciliation.
+## Basic install
+
+This installs the controller without admission webhooks. Nothing validates a schedule as you create it. The controller still runs, but an invalid cron expression surfaces on the status conditions at the first reconcile rather than at `kubectl apply`.
 
 ### 1. Install
 
@@ -24,20 +26,20 @@ helm install lightsout oci://ghcr.io/gjorgji-ts/charts/lightsout \
   --set certManager.enabled=false
 ```
 
-### 2. Verify
+### 2. Check the controller
 
 ```bash
 kubectl get pods -l app.kubernetes.io/name=lightsout
 ```
 
-You should see the controller pod running:
+The controller pod runs:
 
-```
+```text
 NAME                        READY   STATUS    RESTARTS   AGE
 lightsout-xxxxxxxxx-xxxxx   1/1     Running   0          30s
 ```
 
-### 3. Create a Schedule
+### 3. Create a schedule
 
 ```bash
 kubectl apply -f - <<EOF
@@ -55,84 +57,89 @@ spec:
 EOF
 ```
 
-### 4. Check Status
+### 4. Read the state
 
 ```bash
 kubectl get lightsoutschedules
 ```
 
-```
+```text
 NAME               STATE   UPSCALE       DOWNSCALE     SUSPENDED   AGE
 dev-weekday-hours  Up      0 6 * * 1-5   0 18 * * 1-5  false       1m
 ```
 
-## With Webhooks and cert-manager
+## Install with webhooks and cert-manager
 
-This is the recommended production setup. Admission webhooks validate schedules on creation and update, catching errors before they're persisted. cert-manager handles TLS certificate provisioning for the webhook server.
+This is the recommended setup. The admission webhooks validate a schedule on create and on update, so an error surfaces at `kubectl apply` rather than at the first reconcile. cert-manager issues the TLS certificate the webhook server needs.
 
 ### 1. Install cert-manager
 
-If you don't already have cert-manager installed:
+Skip this step if cert-manager already runs on the cluster.
 
 ```bash
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
 ```
 
-Wait for cert-manager pods to be ready:
+Wait for it to come up:
 
 ```bash
 kubectl wait --for=condition=Ready pods -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=120s
 ```
 
-See the [cert-manager documentation](https://cert-manager.io/docs/installation/) for alternative installation methods.
+For other installation methods, see the [cert-manager documentation](https://cert-manager.io/docs/installation/).
 
 ### 2. Install LightsOut
 
-Webhooks and cert-manager integration are enabled by default:
+The chart enables webhooks and the cert-manager integration by default:
 
 ```bash
 helm install lightsout oci://ghcr.io/gjorgji-ts/charts/lightsout
 ```
 
-### 3. Verify
+### 3. Check the install
 
-Check the controller is running:
+Check that the controller runs:
 
 ```bash
 kubectl get pods -l app.kubernetes.io/name=lightsout
 ```
 
-Check the webhook is registered:
+Check that the webhooks are registered:
 
 ```bash
 kubectl get validatingwebhookconfigurations | grep lightsout
 kubectl get mutatingwebhookconfigurations | grep lightsout
 ```
 
-Check the certificate was issued:
+Check that cert-manager issued the certificate:
 
 ```bash
 kubectl get certificates -l app.kubernetes.io/name=lightsout
 ```
 
-### What Webhooks Provide
+### What the webhooks catch
 
-With webhooks enabled, schedules are validated before being persisted:
+The webhooks reject these outright:
 
-- **Invalid cron expressions** are rejected immediately
-- **Invalid timezones** are rejected
-- **Missing namespace selection** on `LightsOutSchedule` (no `namespaceSelector` or `namespaces`) is rejected
-- **Invalid rate limit config** (batch size < 1, negative delays) is rejected
-- **Invalid ArgoCD namespace** (not a valid DNS label) is rejected
-- **Overlapping schedules** produce a warning (not rejected, but you'll know)
-- **Global schedule targeting a namespace** that already has a `LightsOutNamespaceSchedule` produces a warning
-- **Default timezone** is set to `UTC` if not specified
+- An invalid cron expression
+- An invalid timezone
+- A `LightsOutSchedule` with neither `namespaceSelector` nor `namespaces`
+- A rate limit with a batch size below 1, or a negative delay
+- An ArgoCD namespace that is not a valid DNS label
+- An `argoCD.warmupTimeout` of zero or less
 
-Without webhooks, these errors are only surfaced during reconciliation via status conditions.
+These produce a warning and still apply:
 
-## Namespace-Scoped Schedules
+- Two schedules whose windows overlap
+- A cluster-wide schedule that targets a namespace already holding a `LightsOutNamespaceSchedule`
 
-Developers can define their own scaling schedules directly in their namespace without requiring cluster-level access. When a `LightsOutNamespaceSchedule` exists in a namespace, any `LightsOutSchedule` targeting that namespace is automatically skipped for that namespace.
+The mutating webhook also defaults `timezone` to `UTC` when you omit it.
+
+Without the webhooks, each of these surfaces on the status conditions at the first reconcile instead.
+
+## Namespace-scoped schedules
+
+A developer can set their own hours without cluster-level access. While a `LightsOutNamespaceSchedule` exists in a namespace, every `LightsOutSchedule` skips that namespace.
 
 ```bash
 kubectl apply -f - <<EOF
@@ -148,49 +155,49 @@ spec:
 EOF
 ```
 
-Check status the same way as a global schedule:
+Check the state the same way:
 
 ```bash
 kubectl get lightsoutnamespaceschedules -n team-a
 ```
 
-To allow developers to create these resources in their namespace, provision a `Role` and `RoleBinding` granting `create`, `update`, `delete` on `lightsoutnamespaceschedules` (API group `lightsout.techsupport.mk`). `get`, `list`, `watch` are typically granted to all namespace members for observability.
+To let developers create these, grant a `Role` and `RoleBinding` with `create`, `update` and `delete` on `lightsoutnamespaceschedules` in the `lightsout.techsupport.mk` API group. Most clusters grant `get`, `list` and `watch` to every namespace member as well.
 
-## Optional Integrations
+## Optional integrations
 
 ### ArgoCD
 
-To grant LightsOut permissions to label ArgoCD Application CRDs (required for `spec.argoCD`):
+`spec.argoCD` needs permission to label ArgoCD Application CRDs, which you opt in to:
 
 ```bash
 helm upgrade lightsout oci://ghcr.io/gjorgji-ts/charts/lightsout \
   --set rbac.argocd=true
 ```
 
-See the [ArgoCD Integration Guide](argocd.md) for full configuration details.
+The labels are one half of the work. ArgoCD also needs `ignoreDifferences` entries, or `selfHeal` reverts the downscale. For those, see [ArgoCD integration](argocd.md).
 
 ### FluxCD
 
-To grant LightsOut permissions to suspend FluxCD Kustomization and HelmRelease resources (required for `spec.fluxCD`):
+`spec.fluxCD` needs permission to suspend Kustomization and HelmRelease resources:
 
 ```bash
 helm upgrade lightsout oci://ghcr.io/gjorgji-ts/charts/lightsout \
   --set rbac.fluxcd=true
 ```
 
-See the [FluxCD Integration Guide](fluxcd.md) for full configuration details.
+For details, see [FluxCD integration](fluxcd.md).
 
-## Disabling Namespace Schedules
+## Disabling namespace schedules
 
-To disable the namespace schedule controller entirely, set `--set namespaceSchedules.enabled=false` during Helm install/upgrade. The CRD is still installed. Only the controller registration and RBAC rules are skipped.
+To turn the namespace schedule controller off, install or upgrade with `--set namespaceSchedules.enabled=false`. The chart still installs the CRD. It skips the controller registration and the RBAC rules.
 
 ## Uninstall
 
 > [!IMPORTANT]
 > Delete your schedules **before** you uninstall. Each one carries a
 > `lightsout.techsupport.mk/cleanup` finalizer that only the controller can
-> clear. Uninstall first and the delete never finishes. The resource then waits
-> for a finalizer that nothing is left to process.
+> clear. If you uninstall first, the delete never finishes, because the resource
+> waits for a finalizer that nothing is left to process.
 
 ```bash
 kubectl delete lightsoutschedules --all
@@ -200,7 +207,7 @@ helm uninstall lightsout
 
 Deleting a schedule while the controller runs restores its workloads first.
 
-Helm does not delete CRDs on uninstall. To fully clean up:
+Helm leaves the CRDs behind. To remove them:
 
 ```bash
 kubectl delete crd lightsoutschedules.lightsout.techsupport.mk
@@ -208,12 +215,12 @@ kubectl delete crd lightsoutnamespaceschedules.lightsout.techsupport.mk
 ```
 
 > [!WARNING]
-> Deleting the CRDs removes every schedule resource. If a schedule still exists
-> and the controller is already gone, `kubectl delete crd` hangs on the
-> finalizer. Recover with:
+> Deleting the CRDs deletes every schedule resource with them. If a schedule
+> still exists and the controller is already gone, `kubectl delete crd` hangs on
+> the finalizer. Clear it by hand:
 >
 > ```bash
 > kubectl patch lightsoutschedule <name> --type merge -p '{"metadata":{"finalizers":null}}'
 > ```
 >
-> That skips the restore, so the workloads stay scaled down.
+> That skips the restore, so those workloads stay scaled down.

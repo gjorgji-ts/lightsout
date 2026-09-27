@@ -53,8 +53,8 @@ var (
 	reuseDeployment = os.Getenv("E2E_REUSE") == "true"
 )
 
-// TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
-// temporary environment to validate project changes with the purpose of being used in CI jobs.
+// TestE2E runs the end-to-end suite. The cases run against an isolated, temporary
+// cluster, so CI can check a change end to end.
 // The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
 // CertManager.
 func TestE2E(t *testing.T) {

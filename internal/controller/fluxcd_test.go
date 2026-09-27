@@ -148,8 +148,9 @@ func TestDiscoverFluxResources_NoMatch(t *testing.T) {
 func TestDiscoverFluxResources_MultiTenantNamespace(t *testing.T) {
 	scheme := runtime.NewScheme()
 
-	// HelmRelease lives in a team namespace (not flux-system), targets an app namespace.
-	// This is the multi-tenant pattern: prior to the cluster-wide fix this was not discovered.
+	// The multi-tenant pattern: the HelmRelease lives in a team namespace rather than
+	// flux-system, and targets an app namespace. Discovery must search every namespace
+	// to find it, not only the configured Flux namespace.
 	hr := newFluxHelmRelease("hr-app", "team-a", "my-app", nil, false)
 	ks := newFluxKustomization("ks-other", "flux-system", "other", nil, false) // should not match
 
@@ -634,9 +635,9 @@ func TestHandleFluxCDWarmup_DoesNotTagUnmanagedResource(t *testing.T) {
 	_ = corev1.AddToScheme(scheme)
 	now := time.Date(2026, 3, 21, 8, 0, 0, 0, time.UTC)
 
-	// Resource in the target namespace with no LightsOut labels, never managed by us.
-	// Before the fix, the default switch case would call TransitionFluxResourceToWarmingUp
-	// on this resource, stamping it with managed-by and state=warming-up.
+	// A resource in the target namespace that carries no LightsOut labels, so this
+	// schedule never claimed it. Warmup must leave it alone rather than stamping it
+	// with managed-by and state=warming-up.
 	ks := newFluxKustomization("ks-unmanaged", "flux-system", "dev", nil, false)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ks).Build()

@@ -41,6 +41,26 @@ That last step is the point of the ordering. Your applications never start again
 
 Skipped: workloads already at zero replicas, Job-owned pods (they run to completion and never report Ready), and pods that are finished or terminating.
 
+### Choosing which resources an entry covers
+
+An entry covers every resource of that kind in the schedule's target namespaces. Two optional fields narrow it:
+
+```yaml
+spec:
+  customResources:
+    - group: k8s.mariadb.com
+      version: v1alpha1
+      kind: MariaDB
+      name: analytics          # one resource, by name
+      matchLabels:             # or a label selector
+        tier: non-production
+      setFields:
+        - path: /spec/suspend
+          value: true
+```
+
+`name` matches one resource. `matchLabels` selects by label, and the two combine. Use them when a namespace holds several resources of one kind and only some should stop overnight.
+
 ### Field paths
 
 `path` is an [RFC 6901](https://datatracker.ietf.org/doc/html/rfc6901) JSON Pointer. Two rules matter:

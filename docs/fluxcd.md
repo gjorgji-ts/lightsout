@@ -1,16 +1,16 @@
-# FluxCD Integration
+# FluxCD integration
 
-LightsOut can optionally suspend FluxCD `Kustomization` and `HelmRelease` resources during downscale windows to prevent FluxCD from reconciling scaled-down workloads back to their Git-desired state.
+LightsOut can suspend FluxCD `Kustomization` and `HelmRelease` resources for the length of a downscale window. Flux then leaves the scaled-down workloads alone.
 
-## The Problem
+## The problem
 
-When LightsOut scales Deployments to zero replicas, FluxCD detects drift between the live cluster state and Git and reconciles the workloads back up. Unlike ArgoCD (which supports `ignoreDifferences`), FluxCD has no equivalent mechanism. The only reliable way to prevent reconciliation is to suspend Flux resources during the downscale window.
+Flux compares the live cluster against Git, sees a Deployment at zero replicas, and restores it. ArgoCD has `ignoreDifferences` for this. Flux has no equivalent, so the only reliable answer is to suspend the Flux resource for the window.
 
-## The Solution
+## The solution
 
-When `spec.fluxCD` is set on a schedule, LightsOut suspends matching `Kustomization` and `HelmRelease` resources before scaling workloads down, and resumes them once pods are ready after upscale.
+When a schedule carries `spec.fluxCD`, LightsOut suspends the matching `Kustomization` and `HelmRelease` resources before it scales the workloads down. It resumes them once the pods report ready after the upscale.
 
-LightsOut does **not** modify Source resources (GitRepository, HelmRepository). Suspension only pauses reconciliation, the source objects and Git history are untouched.
+LightsOut does not touch Source resources such as `GitRepository` and `HelmRepository`. Suspension pauses reconciliation and nothing else. The source objects and the Git history stay as they are.
 
 ## Configuration
 
@@ -27,59 +27,64 @@ spec:
     matchLabels:
       environment: dev
   fluxCD:
-    namespace: flux-system   # default; where Flux resources live
-    warmupTimeout: 10m       # default; how long to keep Flux suspended post-upscale
+    namespace: flux-system   # where the Flux resources live
+    warmupTimeout: 10m       # cap on the wait for pod readiness
 ```
 
-Setting `fluxCD` to any value (even `{}`) enables the feature. Omitting it entirely disables it.
+Any value enables the feature, including `{}`. Omitting the field disables it.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `fluxCD` | object | `nil` (disabled) | When present, enables FluxCD integration |
-| `fluxCD.namespace` | string | `flux-system` | Namespace where Kustomization/HelmRelease resources live |
-| `fluxCD.warmupTimeout` | duration | `10m` | How long to keep Flux suspended after upscale before resuming regardless of pod readiness |
+| `fluxCD` | object | `nil` (disabled) | Enables the integration when present |
+| `fluxCD.namespace` | string | `flux-system` | Namespace that holds the Kustomization and HelmRelease resources |
+| `fluxCD.warmupTimeout` | duration | `10m` | How long to keep Flux suspended after an upscale before resuming, whatever the pod state |
 
 ## RBAC
 
-FluxCD integration requires additional cluster-wide permissions. Enable them in your Helm values:
+The integration needs cluster-wide permissions that you opt in to:
 
 ```yaml
 rbac:
   fluxcd: true
 ```
 
-Without this, the controller cannot list or update Flux resources, and the feature will fail with warning events on the schedule.
+Without them the controller cannot list or update Flux resources. The feature then fails and reports warning events on the schedule.
 
-## How It Works
+## How it works
 
 ### Discovery
 
-LightsOut searches two locations for matching Flux resources:
+LightsOut looks in two places:
 
-1. Cluster-wide: scans all namespaces for resources whose `spec.targetNamespace` matches any of the schedule's target namespaces. This covers the standard centralised pattern (`flux-system`), multi-tenant setups where teams keep resources in their own namespaces, and any other location.
-2. The target namespaces themselves: finds resources with no `spec.targetNamespace` set (covers HelmReleases deployed in the same namespace as their workloads). The `fluxCD.namespace` value (default `flux-system`) is excluded from this search, a resource there without `spec.targetNamespace` is a system resource, not a co-located deployment.
+1. **Every namespace**, for resources whose `spec.targetNamespace` matches one of the schedule's target namespaces. This covers the centralised `flux-system` layout, and a multi-tenant layout where each team keeps its own resources.
+2. **The target namespaces**, for resources with no `spec.targetNamespace`. This covers a HelmRelease that lives beside the workloads it deploys. The search excludes `fluxCD.namespace`, because a resource there without a target namespace is a system resource rather than a co-located deployment.
 
-Both `Kustomization` and `HelmRelease` are searched in both locations.
+Both searches cover `Kustomization` and `HelmRelease`.
 
-> **Important - Kustomizations must set `spec.targetNamespace`:** A `Kustomization` in `flux-system` (or any namespace outside the target) is only discovered if it has `spec.targetNamespace` matching the schedule's target namespace. A Kustomization in `flux-system` without `spec.targetNamespace` is treated as a system resource and skipped, even if it deploys workloads into a target namespace. Without suspension, kustomize-controller will continue reconciling every `spec.interval` and fight back against LightsOut's scaled-down replicas.
->
-> **What to do:** If your Kustomization deploys resources into a single namespace, set `spec.targetNamespace` on it. If a single Kustomization deploys to multiple namespaces (mixed-namespace resources), split it into one Kustomization per namespace, each with its own `spec.targetNamespace`. See the [example below](#kustomization-targetnamespace-pattern).
->
-> **Other non-discoverable cases:** Resources that target namespaces via `spec.patches`, cross-namespace chart references, or other non-standard mechanisms are also not discovered automatically and require manual management.
+> [!IMPORTANT]
+> A `Kustomization` outside the target namespace is discovered only if its
+> `spec.targetNamespace` names one of the schedule's namespaces. Without that
+> field, LightsOut reads it as a system resource and skips it, even when it
+> deploys workloads into a target namespace. kustomize-controller then keeps
+> reconciling on every `spec.interval` and restores the replicas.
 
-### Kustomization targetNamespace Pattern
+Set `spec.targetNamespace` on any Kustomization that deploys into one namespace. Split a Kustomization that deploys into several, one per namespace. For a worked example, see [Kustomization targetNamespace pattern](#kustomization-targetnamespace-pattern).
 
-For LightsOut to discover and suspend a `Kustomization` living in `flux-system`, it must have `spec.targetNamespace` pointing at the workload namespace:
+Discovery also misses resources that reach a namespace through `spec.patches`, through a cross-namespace chart reference, or through any other non-standard route. Manage those by hand.
+
+### Kustomization targetNamespace pattern
+
+A `Kustomization` in `flux-system` needs `spec.targetNamespace` to point at the workload namespace:
 
 ```yaml
-# ✅ Discoverable - spec.targetNamespace tells lightsout which namespace this manages
+# Discovered: spec.targetNamespace names the namespace this manages.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: my-app-backend
   namespace: flux-system
 spec:
-  targetNamespace: team-backend   # lightsout matches this against its target namespaces
+  targetNamespace: team-backend
   path: ./apps/my-app/backend
   sourceRef:
     kind: GitRepository
@@ -87,38 +92,39 @@ spec:
 ```
 
 ```yaml
-# ❌ Not discoverable - flux-system Kustomization without targetNamespace is treated as a system resource and skipped. kustomize-controller will reconcile every spec.interval and restore replicas that lightsout has scaled to zero.
+# Not discovered: no targetNamespace, so LightsOut reads this as a system
+# resource. kustomize-controller restores the replicas on every interval.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: my-app-backend
   namespace: flux-system
 spec:
-  path: ./apps/my-app/backend     # deploys to team-backend, but lightsout can't know that
+  path: ./apps/my-app/backend
   sourceRef:
     kind: GitRepository
     name: flux-system
 ```
 
-If a single Kustomization deploys to multiple namespaces (e.g. it includes a `HelmRelease` in `flux-system` and `Deployment` resources in `team-backend`), setting `spec.targetNamespace` is not possible, it would override **all** resource namespaces. In this case, split into separate Kustomizations:
+One Kustomization that deploys into several namespaces cannot use the field, because `spec.targetNamespace` overrides the namespace of every resource it applies. Split it instead:
 
 ```yaml
-# Base Kustomization: flux-system resources (HelmReleases with their own targetNamespace)
-# This one is discovered via the HelmRelease's own spec.targetNamespace, no change needed.
+# Base: the flux-system resources. HelmReleases carry their own
+# targetNamespace, so this one needs no change.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: my-app           # manages flux-system HelmReleases
+  name: my-app
   namespace: flux-system
 spec:
   path: ./apps/my-app/base
   ...
 ---
-# Per-namespace Kustomization: plain workloads for team-backend
+# Per namespace: the plain workloads for team-backend.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: my-app-backend   # manages team-backend Deployments/StatefulSets/etc.
+  name: my-app-backend
   namespace: flux-system
 spec:
   targetNamespace: team-backend
@@ -128,38 +134,40 @@ spec:
   ...
 ```
 
-### State Machine
+### States
 
-LightsOut uses a three-state lifecycle on matching Flux resources:
+A managed Flux resource moves through three states:
 
 | State | `lightsout.techsupport.mk/state` | `spec.suspend` | When |
 |---|---|---|---|
-| Downscaled | `down` | `true` | Workloads are at 0 replicas |
-| Warming up | `warming-up` | `true` | Workloads scaling up; pods not yet ready |
-| Up (normal) | _(absent)_ | `false` | All workloads healthy |
+| Downscaled | `down` | `true` | The workloads sit at zero replicas |
+| Warming up | `warming-up` | `true` | The workloads are back, but the pods are not ready |
+| Up | _(absent)_ | `false` | Every workload is healthy |
 
-### Execution Ordering
+### Ordering
 
-**Downscale:**
-1. Label Flux resources `state=down` + `managed-by=<schedule>`
-2. Suspend Flux resources (`spec.suspend: true`)
-3. Scale workloads to zero
+On downscale:
 
-**Upscale:**
-1. Scale workloads back up
-2. Transition Flux resources to `warming-up` (still suspended)
-3. Poll every 30 seconds for pod readiness via `CheckWorkloadReadiness`
-4. Once all pods are ready **or** `warmupTimeout` elapses: set `spec.suspend: false`, remove all lightsout labels
+1. Label the Flux resources `state=down` and `managed-by=<schedule>`.
+2. Suspend them.
+3. Scale the workloads to zero.
 
-### User-Managed Suspension
+On upscale:
 
-If a Flux resource is already suspended by a user (no `lightsout.techsupport.mk/managed-by` label), LightsOut will not touch it. This preserves user intent, LightsOut only manages resources it has claimed.
+1. Scale the workloads back up.
+2. Move the Flux resources to `warming-up`, still suspended.
+3. Check pod readiness every 30 seconds.
+4. Once every pod is ready, or `warmupTimeout` elapses, set `spec.suspend: false` and remove the LightsOut labels.
 
-## Alert Suppression
+### Resources a user suspended
 
-The operator adds `lightsout.techsupport.mk/state` labels to suspended Flux resources. Since suspended resources do not reconcile, most false alerts are suppressed by the suspension itself.
+LightsOut leaves a suspended resource alone when it carries no `lightsout.techsupport.mk/managed-by` label. It manages only what it claimed, so a deliberate suspension survives.
 
-For external monitoring tools or FluxCD Alert resources configured to fire on label changes, you can use `spec.eventSources[].matchLabels` to exclude resources carrying lightsout labels:
+## Alert suppression
+
+A suspended resource does not reconcile, so the suspension itself silences most false alerts.
+
+For a Flux `Alert` that fires on label changes, exclude the resources carrying LightsOut labels:
 
 ```yaml
 apiVersion: notification.toolkit.fluxcd.io/v1beta3
@@ -179,34 +187,34 @@ spec:
     - ".*lightsout.*"
 ```
 
-## Multi-Schedule Safety
+## Multi-schedule safety
 
-- A Flux resource already labelled by a different schedule is skipped.
-- Only the schedule that suspended a resource can resume it.
-- Operations are idempotent, suspending an already-suspended (lightsout-managed) resource is a no-op.
+- LightsOut skips a Flux resource that another schedule already labelled.
+- Only the schedule that suspended a resource resumes it.
+- The operations are idempotent. Suspending a resource this schedule already suspended does nothing.
 
-## Schedule Deletion
+## Schedule deletion
 
-When a schedule is deleted, the finalizer cleanup resumes all Flux resources suspended by that schedule before allowing deletion. No Flux resources are left permanently suspended.
+The finalizer resumes every Flux resource the schedule suspended before the resource goes away. Nothing stays suspended after its schedule is gone.
 
 ## Requirements
 
-This integration targets the stable FluxCD APIs:
+The integration targets the stable Flux APIs:
 
 | Resource | API group | Version | Minimum Flux version |
 |---|---|---|---|
-| Kustomization | `kustomize.toolkit.fluxcd.io` | `v1` | Flux v2.0.0+ |
-| HelmRelease | `helm.toolkit.fluxcd.io` | `v2` | Flux v2.3.0+ |
+| Kustomization | `kustomize.toolkit.fluxcd.io` | `v1` | v2.0.0 |
+| HelmRelease | `helm.toolkit.fluxcd.io` | `v2` | v2.3.0 |
 
-If your cluster runs Flux older than v2.3.0, HelmRelease resources use `v2beta2` or `v2beta1` and will not be discovered. LightsOut degrades gracefully, workload scaling continues, but HelmReleases are not suspended. Upgrade Flux to v2.3.0+ to enable full integration.
+On Flux older than v2.3.0 a HelmRelease serves `v2beta2` or `v2beta1`, which discovery does not match. Workload scaling continues and the HelmReleases stay unsuspended. Upgrade Flux to v2.3.0 for the full integration.
 
-## Known Limitations
+## Known limitations
 
-**In-flight reconciliation at downscale time:** FluxCD's `spec.suspend` does not interrupt a reconciliation that is already running when LightsOut sets it. Any reconciliation in progress at the moment of suspension will run to completion. Subsequent reconciliations are blocked. In practice this window is short (seconds), but workloads scaled to zero immediately after a Flux reconcile begins may be briefly scaled back up before the next reconcile attempt is blocked.
+`spec.suspend` does not interrupt a reconciliation that is already running. Flux finishes the one in flight and blocks the next. The window is seconds long. A downscale that lands just after a reconcile starts can still see the workloads restored once, before the block takes effect.
 
-## Graceful Degradation
+## Graceful degradation
 
-- **FluxCD not installed**: discovery returns empty and scaling continues normally.
-- **Flux older than v2.3.0**: HelmRelease `v2` CRD not found, HelmReleases are skipped, Kustomizations still work if Flux ≥ v2.0.0.
-- **Flux operation fails**: errors are logged and emitted as Kubernetes `Warning` events on the schedule, but workload scaling is never blocked.
-- **`spec.fluxCD` nil**: feature is completely inactive with zero overhead.
+- **Flux is not installed.** Discovery returns empty and scaling continues.
+- **Flux is older than v2.3.0.** The HelmRelease `v2` CRD is absent, so LightsOut skips HelmReleases. Kustomizations still work on v2.0.0 and later.
+- **A Flux operation fails.** LightsOut logs the error and records a `Warning` event on the schedule. Workload scaling never blocks on it.
+- **`spec.fluxCD` is absent.** The feature is inactive and costs nothing.

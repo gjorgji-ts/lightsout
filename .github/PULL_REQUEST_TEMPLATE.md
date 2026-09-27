@@ -1,20 +1,19 @@
 ## Motivation
 
-<!-- Why is this change needed? Link to the issue it fixes, e.g. Fixes #123 -->
+<!-- Why is this change needed? Link the issue it closes, such as: Fixes #123 -->
 
 ## Changes
 
-<!-- Brief summary of what changed and why. -->
+<!-- What changed, and why. -->
 
 ## Testing
 
-<!-- How did you verify this? e.g. unit tests, manual steps against a cluster, e2e run -->
+<!-- How you checked it: unit tests, an e2e run, manual steps against a cluster. -->
 
 ## Checklist
 
-- [ ] Tests added / updated
-- [ ] Docs updated if behaviour changed
+- [ ] Tests added or updated
+- [ ] Docs updated, if the behaviour changed
 - [ ] `make lint` passes
 - [ ] `make test` passes
-- [ ] `make manifests generate` run if API types changed
-- [ ] `make helm-crds` run if CRDs changed
+- [ ] `make manifests generate helm-sync` run, if API types changed

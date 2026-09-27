@@ -870,7 +870,7 @@ func TestScaleStatefulSetUp_WithHPA(t *testing.T) {
 	}
 }
 
-// TestScaleDeploymentUp_HPACrashWindowRecovery verifies that if the controller crashed after
+// TestScaleDeploymentUp_HPACrashWindowRecovery checks that if the controller crashed after
 // restoring the workload but before RestoreHPA ran, a subsequent reconcile cleans up the HPA.
 // In this state the deployment has no original-replicas annotation (already restored) but the
 // HPA still has managed-by + original-hpa-scale-up-policy annotations and scaleUp=Disabled.
