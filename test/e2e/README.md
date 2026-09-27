@@ -11,7 +11,7 @@ Both share `e2e_suite_test.go`. It builds the manager image, loads it into Kind,
 
 ## Core behaviour tests
 
-Scaling, namespace targeting, HPA, safety protections, webhooks, schedule lifecycle and namespace schedules. Run them with `make test-e2e`, which takes roughly 26 minutes.
+Scaling, namespace targeting, HPA, safety protections, webhooks, schedule lifecycle and namespace schedules. Run them with `make test-e2e`, which takes roughly 18 minutes. `Stuck Termination` accounts for 6 of those on its own, because it watches the count across a full check interval.
 
 One limit is worth knowing. `Stuck Termination` covers only the negative case: a clean downscale must report no stuck pod and emit no warning.
 
@@ -108,7 +108,7 @@ Keeping them apart is not cosmetic. An operator Deployment carries no controller
 | `redis` | Redis (OpsTree) | `redis-operator` | 1 | ~150Mi | Needs Helm. Pause-plus-scale. Ready-gated |
 | `mariadb` | MariaDB | `mariadb-operator` | 1 | ~500Mi | Needs Helm. Pause-plus-scale. Ready-gated |
 | `keycloak` | Keycloak | `keycloak-operator` | 1 | ~700Mi | Uses `dev-file`. The pod may never report Ready |
-| `strimzi` | Strimzi (Kafka) | `strimzi-system` | 1 | ~1.5Gi | The only case exercising `delete: true`. Ready-gated |
+| `strimzi` | Strimzi (Kafka) | `strimzi-system` | 1 | ~1.5Gi | The only case exercising `delete: true`. Slowest case, around 7 minutes, because the operator rebuilds the pod set from scratch. Ready-gated |
 | `eck` | ECK (Elasticsearch) | `elastic-system` | 1 | ~2Gi | mmap disabled for Kind. Pause-plus-scale. Ready-gated |
 | `starrocks` | StarRocks (shared-nothing) | `starrocks` | 2 | ~6Gi | Two multi-GB pulls, 25m window. Verifies FE behaviour at zero |
 | `starrocks-shared` | StarRocks (shared-data) | `starrocks` | 2 + SeaweedFS | ~6Gi | Storage-compute separation. Three pulls, 25m window |
