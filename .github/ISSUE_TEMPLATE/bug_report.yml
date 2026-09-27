@@ -21,7 +21,7 @@ body:
     id: kubernetes
     attributes:
       label: Kubernetes version
-      placeholder: "v1.35.0"
+      placeholder: "v1.37.0"
     validations:
       required: true
 
