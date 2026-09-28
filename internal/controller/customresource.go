@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -531,7 +532,7 @@ func handleCustomResourceWarmup(
 			// That scan cannot tell a workload that has not appeared yet from one that
 			// is not coming. Both must agree before the applications are let through.
 			ready := nsReady
-			if crReady, reported := customResourceReady(obj); reported {
+			if crReady, reported := customResourceReady(ctx, obj, cfg); reported {
 				ready = ready && crReady
 			}
 
@@ -561,14 +562,25 @@ func handleCustomResourceWarmup(
 // customResourceReady reports the owning operator's verdict on a restored resource,
 // and whether it gave one at all.
 //
-// Two API conventions cover it. An operator that has not written
+// A ReadyWhen config answers it outright: it is declared precisely because the
+// conventions below do not fit this kind.
+//
+// Otherwise two API conventions cover it. An operator that has not written
 // status.observedGeneration back up to the restored spec's generation has not acted
 // on the restore yet. Its conditions still say what they said before the downscale.
 // Once it has caught up, a condition of type Ready is its own answer on whether the
 // database or broker is serving.
 //
 // Resources carrying neither leave the caller to judge by the workloads instead.
-func customResourceReady(obj *unstructured.Unstructured) (ready bool, reported bool) {
+func customResourceReady(
+	ctx context.Context,
+	obj *unstructured.Unstructured,
+	cfg *lightsoutv1alpha1.CustomResourceConfig,
+) (ready bool, reported bool) {
+	if len(cfg.ReadyWhen) > 0 {
+		return matchesReadyWhen(ctx, obj, cfg.ReadyWhen), true
+	}
+
 	observedGen, found, err := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
 	if err == nil && found && observedGen < obj.GetGeneration() {
 		return false, true
@@ -591,6 +603,46 @@ func customResourceReady(obj *unstructured.Unstructured) (ready bool, reported b
 	}
 
 	return false, false
+}
+
+// matchesReadyWhen reports whether every declared match holds on the resource.
+//
+// A path that resolves to nothing, or a field that is absent, does not hold. The
+// operator has not written that part of the status yet, which is the state the gate
+// exists to wait out. A malformed pointer is the same answer, logged so the schedule
+// author sees why the resource never reports ready.
+func matchesReadyWhen(ctx context.Context, obj *unstructured.Unstructured, matches []lightsoutv1alpha1.FieldMatch) bool {
+	logger := log.FromContext(ctx)
+
+	for _, match := range matches {
+		tokens, err := jsonpointer.Parse(match.Path)
+		if err != nil {
+			logger.Error(err, "invalid readyWhen path, treating custom resource as not ready",
+				"customResource", obj.GetName(), "path", match.Path)
+			return false
+		}
+
+		var want any
+		if err := json.Unmarshal(match.Value.Raw, &want); err != nil {
+			logger.Error(err, "invalid readyWhen value, treating custom resource as not ready",
+				"customResource", obj.GetName(), "path", match.Path)
+			return false
+		}
+		want = jsonpointer.NormalizeValue(want)
+
+		paths := jsonpointer.Expand(obj.Object, tokens)
+		if len(paths) == 0 {
+			return false
+		}
+		for _, path := range paths {
+			got, present := jsonpointer.GetValue(obj.Object, path)
+			if !present || !reflect.DeepEqual(got, want) {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // restoreAllCustomResources returns every custom resource this schedule owns to its

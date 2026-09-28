@@ -239,7 +239,14 @@ The **validating webhook** rejects a schedule that carries:
 - A timezone that is not a recognised IANA name
 - A rate limit with a batch size below 1, or a negative delay
 - An ArgoCD namespace that is not a valid DNS label
-- An `argoCD.warmupTimeout` of zero or less
+- An `argoCD.warmupTimeout`, or a `customResourceWarmupTimeout`, of zero or less
+- A malformed JSON Pointer, or a missing value, in a `setFields` or `readyWhen` entry
+- A `customResources` entry that combines `delete` with `setFields` or `readyWhen`
+- A `customResources` entry that sets neither `setFields` nor `delete`, and so does nothing
+
+The pointer checks matter more than they look. The controller cannot report a bad
+pointer: it finds out at the first upscale, in a log line, hours after the schedule
+was applied.
 
 It warns, and still admits, when a schedule overlaps an existing one.
 

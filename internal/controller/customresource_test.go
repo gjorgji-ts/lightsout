@@ -429,6 +429,46 @@ func TestHandleCustomResourceWarmup(t *testing.T) {
 		}
 	})
 
+	// StarRocks and its like publish neither a Ready condition nor observedGeneration,
+	// so the schedule author points the gate at the field the operator does write.
+	t.Run("readyWhen decides for resources with no standard status", func(t *testing.T) {
+		phaseConfig := cnpgConfig()
+		phaseConfig.ReadyWhen = []lightsoutv1alpha1.FieldMatch{
+			{Path: "/status/phase", Value: apiextensionsv1.JSON{Raw: []byte(`"running"`)}},
+		}
+		phaseCore := &lightsoutv1alpha1.LightsOutScheduleCore{
+			CustomResources: []lightsoutv1alpha1.CustomResourceConfig{*phaseConfig},
+		}
+
+		for _, tt := range []struct {
+			name      string
+			phase     string
+			wantHolds bool
+		}{
+			{name: "field absent", phase: "", wantHolds: true},
+			{name: "field does not match", phase: "reconciling", wantHolds: true},
+			{name: "field matches", phase: "running", wantHolds: false},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				cluster, sts := warmingUp(3, now.Add(-time.Minute))
+				// A Ready condition the config overrides, so a match on it would show up
+				// as the wrong answer rather than passing by luck.
+				setReadyCondition(t, cluster, "True")
+				if tt.phase != "" {
+					if err := unstructured.SetNestedField(cluster.Object, tt.phase, "status", "phase"); err != nil {
+						t.Fatalf("setting phase: %v", err)
+					}
+				}
+				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, sts).Build()
+
+				holds := handleCustomResourceWarmup(context.Background(), c, nil, cluster, phaseCore, "sched", []string{"apps"}, now)
+				if holds != tt.wantHolds {
+					t.Errorf("still warming up = %v, want %v", holds, tt.wantHolds)
+				}
+			})
+		}
+	})
+
 	t.Run("releases when the timeout elapses", func(t *testing.T) {
 		cluster, sts := warmingUp(0, now.Add(-30*time.Minute))
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, sts).Build()

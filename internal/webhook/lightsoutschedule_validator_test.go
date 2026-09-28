@@ -18,7 +18,9 @@ package webhook
 
 import (
 	"testing"
+	"time"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -101,6 +103,143 @@ func TestValidateRateLimit(t *testing.T) {
 				t.Errorf("ValidateRateLimit() errors = %v, wantErr %v", errs, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateCustomResources(t *testing.T) {
+	hibernate := []lightsoutv1alpha1.FieldPatch{{
+		Path:  "/metadata/annotations/cnpg.io~1hibernation",
+		Value: apiextensionsv1.JSON{Raw: []byte(`"on"`)},
+	}}
+
+	tests := []struct {
+		name            string
+		customResources []lightsoutv1alpha1.CustomResourceConfig
+		wantErrs        int
+	}{
+		{
+			name:            "no custom resources is valid",
+			customResources: nil,
+		},
+		{
+			name: "patching entry is valid",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1", Kind: "Cluster", SetFields: hibernate,
+			}},
+		},
+		{
+			name: "deleting entry is valid",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1beta2", Kind: "StrimziPodSet", Delete: true,
+			}},
+		},
+		{
+			name: "readyWhen alongside setFields is valid",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1", Kind: "StarRocksCluster", SetFields: hibernate,
+				ReadyWhen: []lightsoutv1alpha1.FieldMatch{{
+					Path:  "/status/phase",
+					Value: apiextensionsv1.JSON{Raw: []byte(`"running"`)},
+				}},
+			}},
+		},
+		{
+			name: "entry that neither patches nor deletes does nothing",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1", Kind: "Cluster",
+			}},
+			wantErrs: 1,
+		},
+		{
+			name: "delete with setFields and readyWhen is rejected on both",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1", Kind: "Cluster", Delete: true, SetFields: hibernate,
+				ReadyWhen: []lightsoutv1alpha1.FieldMatch{{
+					Path:  "/status/phase",
+					Value: apiextensionsv1.JSON{Raw: []byte(`"running"`)},
+				}},
+			}},
+			wantErrs: 2,
+		},
+		{
+			name: "setFields path that is not a JSON Pointer",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1", Kind: "Cluster",
+				SetFields: []lightsoutv1alpha1.FieldPatch{{
+					Path:  "spec/instances",
+					Value: apiextensionsv1.JSON{Raw: []byte(`0`)},
+				}},
+			}},
+			wantErrs: 1,
+		},
+		{
+			name: "setFields path with an empty segment",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1", Kind: "Cluster",
+				SetFields: []lightsoutv1alpha1.FieldPatch{{
+					Path:  "/spec//instances",
+					Value: apiextensionsv1.JSON{Raw: []byte(`0`)},
+				}},
+			}},
+			wantErrs: 1,
+		},
+		{
+			name: "readyWhen path that is not a JSON Pointer",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1", Kind: "Cluster", SetFields: hibernate,
+				ReadyWhen: []lightsoutv1alpha1.FieldMatch{{
+					Path:  "status/phase",
+					Value: apiextensionsv1.JSON{Raw: []byte(`"running"`)},
+				}},
+			}},
+			wantErrs: 1,
+		},
+		{
+			name: "missing values are rejected",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{{
+				Version: "v1", Kind: "Cluster",
+				SetFields: []lightsoutv1alpha1.FieldPatch{{Path: "/spec/instances"}},
+				ReadyWhen: []lightsoutv1alpha1.FieldMatch{{Path: "/status/phase"}},
+			}},
+			wantErrs: 2,
+		},
+		{
+			name: "each entry is reported separately",
+			customResources: []lightsoutv1alpha1.CustomResourceConfig{
+				{Version: "v1", Kind: "Cluster"},
+				{Version: "v1", Kind: "Kafka"},
+			},
+			wantErrs: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := ValidateCustomResources(tt.customResources)
+			if len(errs) != tt.wantErrs {
+				t.Errorf("got %d errors, want %d: %v", len(errs), tt.wantErrs, errs)
+			}
+		})
+	}
+}
+
+func TestValidateScheduleCore_CustomResourceWarmupTimeout(t *testing.T) {
+	core := func(timeout time.Duration) *lightsoutv1alpha1.LightsOutScheduleCore {
+		return &lightsoutv1alpha1.LightsOutScheduleCore{
+			Upscale:                     "0 6 * * 1-5",
+			Downscale:                   "0 18 * * 1-5",
+			CustomResourceWarmupTimeout: &metav1.Duration{Duration: timeout},
+		}
+	}
+
+	if err := ValidateScheduleCore(core(5 * time.Minute)); err != nil {
+		t.Errorf("positive warmup timeout should be valid, got %v", err)
+	}
+	if err := ValidateScheduleCore(core(0)); err == nil {
+		t.Error("zero warmup timeout should be rejected: the gate would never hold")
+	}
+	if err := ValidateScheduleCore(core(-time.Minute)); err == nil {
+		t.Error("negative warmup timeout should be rejected")
 	}
 }
 
