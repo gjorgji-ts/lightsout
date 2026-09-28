@@ -39,6 +39,7 @@ import (
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 	"github.com/gjorgji-ts/lightsout/internal/constants"
+	"github.com/gjorgji-ts/lightsout/internal/jsonpointer"
 )
 
 func jsonValue(t *testing.T, v any) apiextensionsv1.JSON {
@@ -662,7 +663,7 @@ customResources:
 			t.Errorf("%s: entry sets no fields and does not delete", cfg.Kind)
 		}
 		for _, field := range cfg.SetFields {
-			if _, err := parsePointer(field.Path); err != nil {
+			if _, err := jsonpointer.Parse(field.Path); err != nil {
 				t.Errorf("%s: path %q: %v", cfg.Kind, field.Path, err)
 			}
 			var decoded any

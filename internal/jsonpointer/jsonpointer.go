@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package jsonpointer
 
 import (
 	"fmt"
@@ -28,9 +28,9 @@ import (
 // that position in a pointer.
 const wildcardToken = "*"
 
-// parsePointer splits an RFC 6901 JSON Pointer into its unescaped tokens.
+// Parse splits an RFC 6901 JSON Pointer into its unescaped tokens.
 // "~1" decodes to "/" and "~0" to "~", in that order, as the RFC requires.
-func parsePointer(pointer string) ([]string, error) {
+func Parse(pointer string) ([]string, error) {
 	if pointer == "" {
 		return nil, fmt.Errorf("empty JSON Pointer")
 	}
@@ -52,10 +52,10 @@ func parsePointer(pointer string) ([]string, error) {
 	return tokens, nil
 }
 
-// formatPointer renders concrete tokens back into an RFC 6901 pointer string.
+// Format renders concrete tokens back into an RFC 6901 pointer string.
 // Used as the key under which a field's original value is recorded, so restore
 // targets exactly the element that was overwritten.
-func formatPointer(tokens []string) string {
+func Format(tokens []string) string {
 	var b strings.Builder
 	for _, token := range tokens {
 		b.WriteString("/")
@@ -65,7 +65,7 @@ func formatPointer(tokens []string) string {
 	return b.String()
 }
 
-// expandPointer resolves tokens against root and returns every concrete token
+// Expand resolves tokens against root and returns every concrete token
 // path they match, with wildcards expanded against the object's actual shape.
 //
 // Segments missing from an existing object are still returned as long as no
@@ -73,7 +73,7 @@ func formatPointer(tokens []string) string {
 // whatever is missing along the way. That is what lets a resource gain an
 // annotation when it carries no annotations at all. A missing segment followed
 // by a wildcard yields nothing, because there is no shape to expand against.
-func expandPointer(root any, tokens []string) [][]string {
+func Expand(root any, tokens []string) [][]string {
 	var out [][]string
 	walkPointer(root, tokens, nil, &out)
 	return out
@@ -135,10 +135,10 @@ func walkPointer(node any, tokens []string, prefix []string, out *[][]string) {
 	}
 }
 
-// getPointerValue returns the value at a concrete token path, and whether the
+// GetValue returns the value at a concrete token path, and whether the
 // field is present at all. Absence is reported separately from a null value so
 // restore can tell "remove this field again" from "write null back".
-func getPointerValue(root any, tokens []string) (any, bool) {
+func GetValue(root any, tokens []string) (any, bool) {
 	node := root
 	for _, token := range tokens {
 		switch typed := node.(type) {
@@ -161,10 +161,10 @@ func getPointerValue(root any, tokens []string) (any, bool) {
 	return node, true
 }
 
-// setPointerValue writes value at a concrete token path, creating intermediate
+// SetValue writes value at a concrete token path, creating intermediate
 // objects as needed. Array elements must already exist: growing an array would
 // mean inventing entries the operator never declared.
-func setPointerValue(root map[string]any, tokens []string, value any) error {
+func SetValue(root map[string]any, tokens []string, value any) error {
 	if len(tokens) == 0 {
 		return fmt.Errorf("cannot set the document root")
 	}
@@ -182,14 +182,14 @@ func setPointerValue(root map[string]any, tokens []string, value any) error {
 		case []any:
 			index, err := strconv.Atoi(token)
 			if err != nil {
-				return fmt.Errorf("segment %q at %s is not an array index", token, formatPointer(tokens[:i+1]))
+				return fmt.Errorf("segment %q at %s is not an array index", token, Format(tokens[:i+1]))
 			}
 			if index < 0 || index >= len(typed) {
-				return fmt.Errorf("array index %d at %s is out of range", index, formatPointer(tokens[:i+1]))
+				return fmt.Errorf("array index %d at %s is out of range", index, Format(tokens[:i+1]))
 			}
 			node = typed[index]
 		default:
-			return fmt.Errorf("cannot descend into %s: not an object or array", formatPointer(tokens[:i+1]))
+			return fmt.Errorf("cannot descend into %s: not an object or array", Format(tokens[:i+1]))
 		}
 	}
 
@@ -201,27 +201,27 @@ func setPointerValue(root map[string]any, tokens []string, value any) error {
 	case []any:
 		index, err := strconv.Atoi(leaf)
 		if err != nil {
-			return fmt.Errorf("segment %q at %s is not an array index", leaf, formatPointer(tokens))
+			return fmt.Errorf("segment %q at %s is not an array index", leaf, Format(tokens))
 		}
 		if index < 0 || index >= len(typed) {
-			return fmt.Errorf("array index %d at %s is out of range", index, formatPointer(tokens))
+			return fmt.Errorf("array index %d at %s is out of range", index, Format(tokens))
 		}
 		typed[index] = value
 		return nil
 	default:
-		return fmt.Errorf("cannot set %s: parent is not an object or array", formatPointer(tokens))
+		return fmt.Errorf("cannot set %s: parent is not an object or array", Format(tokens))
 	}
 }
 
-// deletePointerValue removes the field at a concrete token path. Used to restore
+// DeleteValue removes the field at a concrete token path. Used to restore
 // a field that did not exist before downscale set it. Array elements are left in
 // place: removing one would renumber its siblings.
-func deletePointerValue(root map[string]any, tokens []string) error {
+func DeleteValue(root map[string]any, tokens []string) error {
 	if len(tokens) == 0 {
 		return fmt.Errorf("cannot delete the document root")
 	}
 
-	parent, ok := getPointerValue(root, tokens[:len(tokens)-1])
+	parent, ok := GetValue(root, tokens[:len(tokens)-1])
 	if !ok {
 		return nil
 	}
@@ -235,14 +235,14 @@ func deletePointerValue(root map[string]any, tokens []string) error {
 		// Nothing sensible to delete: leave the element alone.
 		return nil
 	default:
-		return fmt.Errorf("cannot delete %s: parent is not an object", formatPointer(tokens))
+		return fmt.Errorf("cannot delete %s: parent is not an object", Format(tokens))
 	}
 }
 
-// normalizeJSONValue converts a decoded JSON value into the subset of types that
+// NormalizeValue converts a decoded JSON value into the subset of types that
 // unstructured objects accept. Numbers decode to float64, but replica counts and
 // other integer fields must round-trip as integers, so whole floats become int64.
-func normalizeJSONValue(value any) any {
+func NormalizeValue(value any) any {
 	switch typed := value.(type) {
 	case float64:
 		if typed == math.Trunc(typed) && !math.IsInf(typed, 0) &&
@@ -257,13 +257,13 @@ func normalizeJSONValue(value any) any {
 	case []any:
 		out := make([]any, len(typed))
 		for i, item := range typed {
-			out[i] = normalizeJSONValue(item)
+			out[i] = NormalizeValue(item)
 		}
 		return out
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, item := range typed {
-			out[key] = normalizeJSONValue(item)
+			out[key] = NormalizeValue(item)
 		}
 		return out
 	default:

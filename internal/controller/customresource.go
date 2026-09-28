@@ -34,6 +34,7 @@ import (
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 	"github.com/gjorgji-ts/lightsout/internal/constants"
+	"github.com/gjorgji-ts/lightsout/internal/jsonpointer"
 )
 
 // capturedField records what a field looked like before downscale overwrote it.
@@ -129,7 +130,7 @@ func TurnCustomResourceDown(
 	captured := make(map[string]capturedField)
 
 	for _, field := range cfg.SetFields {
-		tokens, err := parsePointer(field.Path)
+		tokens, err := jsonpointer.Parse(field.Path)
 		if err != nil {
 			return false, fmt.Errorf("field %q: %w", field.Path, err)
 		}
@@ -138,20 +139,20 @@ func TurnCustomResourceDown(
 		if err := json.Unmarshal(field.Value.Raw, &value); err != nil {
 			return false, fmt.Errorf("field %q: decoding value: %w", field.Path, err)
 		}
-		value = normalizeJSONValue(value)
+		value = jsonpointer.NormalizeValue(value)
 
-		paths := expandPointer(obj.Object, tokens)
+		paths := jsonpointer.Expand(obj.Object, tokens)
 		if len(paths) == 0 {
 			logger.Info("field path matched nothing on custom resource, skipping field", "path", field.Path)
 			continue
 		}
 
 		for _, path := range paths {
-			previous, present := getPointerValue(obj.Object, path)
-			captured[formatPointer(path)] = capturedField{Present: present, Value: previous}
+			previous, present := jsonpointer.GetValue(obj.Object, path)
+			captured[jsonpointer.Format(path)] = capturedField{Present: present, Value: previous}
 
-			if err := setPointerValue(obj.Object, path, value); err != nil {
-				return false, fmt.Errorf("field %q: %w", formatPointer(path), err)
+			if err := jsonpointer.SetValue(obj.Object, path, value); err != nil {
+				return false, fmt.Errorf("field %q: %w", jsonpointer.Format(path), err)
 			}
 		}
 	}
@@ -234,17 +235,17 @@ func RestoreCustomResourceFields(
 	}
 
 	for pointer, field := range captured {
-		tokens, err := parsePointer(pointer)
+		tokens, err := jsonpointer.Parse(pointer)
 		if err != nil {
 			return false, fmt.Errorf("captured field %q: %w", pointer, err)
 		}
 		if field.Present {
-			if err := setPointerValue(obj.Object, tokens, normalizeJSONValue(field.Value)); err != nil {
+			if err := jsonpointer.SetValue(obj.Object, tokens, jsonpointer.NormalizeValue(field.Value)); err != nil {
 				return false, fmt.Errorf("restoring %q: %w", pointer, err)
 			}
 			continue
 		}
-		if err := deletePointerValue(obj.Object, tokens); err != nil {
+		if err := jsonpointer.DeleteValue(obj.Object, tokens); err != nil {
 			return false, fmt.Errorf("removing %q: %w", pointer, err)
 		}
 	}
