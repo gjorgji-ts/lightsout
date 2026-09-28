@@ -321,10 +321,18 @@ type operatorCase struct {
 
 	// Assertions on the custom resource itself, so a passing test proves the field
 	// was written rather than only that pods disappeared.
-	CRRef        string // "kind.group/name" for kubectl
-	FieldPath    string // jsonpath into the custom resource
-	FieldWhenUp  string // expected value while Up. An empty string means the field is absent
-	FieldWhenOff string // expected value while Down
+	CRRef     string // "kind.group/name" for kubectl
+	FieldPath string // jsonpath into the custom resource
+
+	// ReadyWhenPath and ReadyWhenValue drive a readyWhen entry on the schedule. They
+	// suit an operator that publishes neither a Ready condition nor
+	// status.observedGeneration. When set, the case also reads the field at the moment
+	// of release. That is what separates a working gate from one the warmup timeout
+	// opened.
+	ReadyWhenPath  string
+	ReadyWhenValue string
+	FieldWhenUp    string // expected value while Up. An empty string means the field is absent
+	FieldWhenOff   string // expected value while Down
 }
 
 type rbacRule struct {
@@ -880,11 +888,18 @@ spec:
         - path: /spec/starRocksBeSpec/replicas
           value: 0
         - path: /spec/starRocksFeSpec/replicas
-          value: 0`,
-		CRRef:        "starrockscluster.starrocks.com/sr",
-		FieldPath:    "{.spec.starRocksFeSpec.replicas}",
-		FieldWhenUp:  "1",
-		FieldWhenOff: "0",
+          value: 0
+      readyWhen:
+        - path: /status/phase
+          value: running`,
+		CRRef:     "starrockscluster.starrocks.com/sr",
+		FieldPath: "{.spec.starRocksFeSpec.replicas}",
+		// StarRocks publishes neither a Ready condition nor status.observedGeneration,
+		// so status.phase is the only field that reports the cluster is serving.
+		ReadyWhenPath:  "{.status.phase}",
+		ReadyWhenValue: "running",
+		FieldWhenUp:    "1",
+		FieldWhenOff:   "0",
 	},
 	{
 		Key:  "starrocks-shared",
@@ -1156,12 +1171,28 @@ var _ = Describe("Operator Integration", Serial, func() {
 					"the operator did not recreate its workloads after restore")
 
 				By("checking lightsout released the custom resource after warmup")
+				// Sampled on the same poll as the release. It therefore records what
+				// the gate saw when it opened, not what the value settles to later.
+				readyWhenAtRelease := ""
 				Eventually(func(g Gomega) {
+					if tc.ReadyWhenPath != "" {
+						readyWhenAtRelease = crField(g, tc.CRRef, testNamespace, tc.ReadyWhenPath)
+					}
 					g.Expect(crLabel(g, tc.CRRef, testNamespace, "lightsout.techsupport.mk/managed-by")).
 						To(BeEmpty())
-				}, 15*time.Minute, 10*time.Second).Should(Succeed(),
+				}, 15*time.Minute, 5*time.Second).Should(Succeed(),
 					"lightsout kept the resource in warming-up. It releases the resource when the "+
 						"pods report ready, or when customResourceWarmupTimeout elapses.")
+
+				// Without this the readyWhen case proves nothing. A gate that ignored
+				// the config would still release on the warmup timeout, well inside
+				// the window the assertion above allows.
+				if tc.ReadyWhenPath != "" {
+					Expect(readyWhenAtRelease).To(Equal(tc.ReadyWhenValue),
+						"lightsout released the resource while %s was %q, so readyWhen did not "+
+							"gate the warmup. It opened on customResourceWarmupTimeout instead.",
+						tc.ReadyWhenPath, readyWhenAtRelease)
+				}
 			})
 		})
 	}
@@ -1197,6 +1228,16 @@ func applySchedule(name, testNamespace string, tc operatorCase, up bool) {
 		excludeLabels = b.String()
 	}
 
+	// The timeout starts when the resource enters warming-up, which is before the
+	// operator has rebuilt anything. A readyWhen case waits on a status field the
+	// operator writes only once its pods are serving, so it needs the longer bound.
+	// Too short a timeout opens the gate on the clock instead, which would fail the
+	// assertion for the wrong reason.
+	warmupTimeout := "5m"
+	if tc.ReadyWhenPath != "" {
+		warmupTimeout = "15m"
+	}
+
 	manifest := fmt.Sprintf(`
 apiVersion: lightsout.techsupport.mk/v1alpha1
 kind: LightsOutSchedule
@@ -1207,10 +1248,10 @@ spec:
   upscale: "%s"
   downscale: "%s"
   timezone: "UTC"
-  customResourceWarmupTimeout: 5m%s%s
+  customResourceWarmupTimeout: %s%s%s
   namespaces:
     - %s%s
-`, name, namespace, upscale, downscale, includeOwned, excludeLabels, testNamespace, tc.CustomResources)
+`, name, namespace, upscale, downscale, warmupTimeout, includeOwned, excludeLabels, testNamespace, tc.CustomResources)
 
 	applyManifest(manifest, "schedule-"+tc.Key)
 }

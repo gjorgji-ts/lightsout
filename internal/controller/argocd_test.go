@@ -411,6 +411,7 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 		statefulsets []appsv1.StatefulSet
 		pods         []corev1.Pod
 		wantReady    bool
+		wantObserved bool
 	}{
 		{
 			name: "all deployments ready",
@@ -421,7 +422,8 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 					Status:     appsv1.DeploymentStatus{ReadyReplicas: 3},
 				},
 			},
-			wantReady: true,
+			wantReady:    true,
+			wantObserved: true,
 		},
 		{
 			name: "deployment not yet ready",
@@ -432,7 +434,8 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 					Status:     appsv1.DeploymentStatus{ReadyReplicas: 1},
 				},
 			},
-			wantReady: false,
+			wantReady:    false,
+			wantObserved: true,
 		},
 		{
 			name: "zero-replica deployment is skipped",
@@ -443,7 +446,8 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 					Status:     appsv1.DeploymentStatus{ReadyReplicas: 0},
 				},
 			},
-			wantReady: true,
+			wantReady:    true,
+			wantObserved: false,
 		},
 		{
 			name: "all statefulsets ready",
@@ -454,7 +458,8 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 					Status:     appsv1.StatefulSetStatus{ReadyReplicas: 2},
 				},
 			},
-			wantReady: true,
+			wantReady:    true,
+			wantObserved: true,
 		},
 		{
 			name: "statefulset not yet ready",
@@ -465,47 +470,55 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 					Status:     appsv1.StatefulSetStatus{ReadyReplicas: 0},
 				},
 			},
-			wantReady: false,
+			wantReady:    false,
+			wantObserved: true,
 		},
 		{
-			name:      "no workloads returns ready",
-			wantReady: true,
+			name:         "no workloads returns ready",
+			wantReady:    true,
+			wantObserved: false,
 		},
 		{
 			// CloudNativePG builds its database from bare pods, so nothing here is
 			// covered by the replica counts above.
-			name:      "operator-owned pod not yet ready",
-			pods:      []corev1.Pod{ownedPod("pg-1", "Cluster", corev1.ConditionFalse)},
-			wantReady: false,
+			name:         "operator-owned pod not yet ready",
+			pods:         []corev1.Pod{ownedPod("pg-1", "Cluster", corev1.ConditionFalse)},
+			wantReady:    false,
+			wantObserved: true,
 		},
 		{
-			name:      "operator-owned pod ready",
-			pods:      []corev1.Pod{ownedPod("pg-1", "Cluster", corev1.ConditionTrue)},
-			wantReady: true,
+			name:         "operator-owned pod ready",
+			pods:         []corev1.Pod{ownedPod("pg-1", "Cluster", corev1.ConditionTrue)},
+			wantReady:    true,
+			wantObserved: true,
 		},
 		{
-			name:      "pod with no owner is checked",
-			pods:      []corev1.Pod{ownedPod("standalone", "", corev1.ConditionFalse)},
-			wantReady: false,
+			name:         "pod with no owner is checked",
+			pods:         []corev1.Pod{ownedPod("standalone", "", corev1.ConditionFalse)},
+			wantReady:    false,
+			wantObserved: true,
 		},
 		{
 			// Covered by the Deployment replica count, and a rolling update leaves an
 			// unready pod behind that says nothing about the namespace.
-			name:      "replicaset-owned pod is skipped",
-			pods:      []corev1.Pod{ownedPod("web-abc", "ReplicaSet", corev1.ConditionFalse)},
-			wantReady: true,
+			name:         "replicaset-owned pod is skipped",
+			pods:         []corev1.Pod{ownedPod("web-abc", "ReplicaSet", corev1.ConditionFalse)},
+			wantReady:    true,
+			wantObserved: false,
 		},
 		{
-			name:      "statefulset-owned pod is skipped",
-			pods:      []corev1.Pod{ownedPod("db-0", "StatefulSet", corev1.ConditionFalse)},
-			wantReady: true,
+			name:         "statefulset-owned pod is skipped",
+			pods:         []corev1.Pod{ownedPod("db-0", "StatefulSet", corev1.ConditionFalse)},
+			wantReady:    true,
+			wantObserved: false,
 		},
 		{
 			// A job pod runs to completion and never reports Ready. Waiting on one
 			// would hold the namespace in warming-up until the timeout.
-			name:      "job-owned pod is skipped",
-			pods:      []corev1.Pod{ownedPod("migrate-xyz", "Job", corev1.ConditionFalse)},
-			wantReady: true,
+			name:         "job-owned pod is skipped",
+			pods:         []corev1.Pod{ownedPod("migrate-xyz", "Job", corev1.ConditionFalse)},
+			wantReady:    true,
+			wantObserved: false,
 		},
 		{
 			name: "finished pod is skipped",
@@ -514,7 +527,8 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 				p.Status.Phase = corev1.PodSucceeded
 				return []corev1.Pod{p}
 			}(),
-			wantReady: true,
+			wantReady:    true,
+			wantObserved: false,
 		},
 		{
 			name: "terminating pod is skipped",
@@ -525,7 +539,8 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 				p.Finalizers = []string{"lightsout.test/hold"}
 				return []corev1.Pod{p}
 			}(),
-			wantReady: true,
+			wantReady:    true,
+			wantObserved: false,
 		},
 	}
 
@@ -548,12 +563,15 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 				WithStatusSubresource(objs...).
 				Build()
 
-			ready, err := CheckWorkloadReadiness(context.Background(), fakeClient, "dev")
+			ready, observed, err := CheckWorkloadReadiness(context.Background(), fakeClient, "dev")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if ready != tt.wantReady {
 				t.Errorf("ready = %v, want %v", ready, tt.wantReady)
+			}
+			if observed != tt.wantObserved {
+				t.Errorf("observed = %v, want %v", observed, tt.wantObserved)
 			}
 		})
 	}

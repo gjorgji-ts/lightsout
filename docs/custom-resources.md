@@ -32,14 +32,34 @@ On **downscale**, for every matching resource in the schedule's target namespace
 On **upscale**, in this order:
 
 1. Captured values are written back. A field that did not exist before is removed again rather than set to an empty value.
-2. The resource moves to `state: warming-up` and LightsOut waits for the workloads in its namespace to report ready.
+2. The resource moves to `state: warming-up` and LightsOut waits for the resource itself, and for the workloads in its namespace, to report ready.
 3. Application workloads scale up only once those are ready, or once `customResourceWarmupTimeout` elapses.
 
 That last step is the point of the ordering. Your applications never start against a database that is still hibernating, or still waiting on a node.
 
-**What counts as ready.** Every Deployment and StatefulSet in the namespace must have all its desired replicas ready. Pods that neither owns must report the `Ready` condition. That is what gates the wait for an operator which builds bare Pods, such as CloudNativePG.
+**What counts as ready.** Two answers must agree.
+
+The operator's own answer comes first. A resource whose `status.observedGeneration` has not caught up with its `metadata.generation` is one the operator has not reconciled since the restore. It is not ready, whatever else its status still says from before the downscale. Once it has caught up, a status condition of type `Ready` is the operator's verdict. A resource that publishes neither is left to the workload check alone.
+
+For an operator that publishes neither, `readyWhen` names the field that does say it. Every entry must hold:
+
+```yaml
+customResources:
+  - group: starrocks.com
+    version: v1
+    kind: StarRocksCluster
+    readyWhen:
+      - path: /status/phase
+        value: running
+```
+
+A path that matches nothing, and a field the operator has not written yet, both count as not ready. `readyWhen` replaces the two conventions above rather than adding to them. Point it at a field the operator writes once the service accepts connections, not at one it sets as soon as it starts working.
+
+The workload answer follows. Every Deployment and StatefulSet in the namespace must have all its desired replicas ready. Pods that neither owns must report the `Ready` condition. That is what gates the wait for an operator which builds bare Pods, such as CloudNativePG.
 
 Skipped: workloads already at zero replicas, Job-owned pods (they run to completion and never report Ready), and pods that are finished or terminating.
+
+A namespace where nothing is left to check is not ready. An empty namespace means the operator has not built its workloads yet, or the nodes to run them are still scaling up. Either way the pods the gate exists to wait for have not been scheduled. Waiting there is what the `customResourceWarmupTimeout` bound is for.
 
 ### Choosing which resources an entry covers
 
@@ -267,6 +287,8 @@ For Strimzi 1.x:
 ```
 
 Order matters, and it is the declaration order. The pause entry must come before the delete entry, or the operator recreates the pod set immediately. Upscale restores nothing for a `delete` entry. Removing the pause annotation is what makes Strimzi rebuild the pod set from the `Kafka` spec.
+
+`delete` replaces the whole entry rather than adding to it. The webhook therefore rejects an entry that combines it with `setFields` or `readyWhen`, and one that sets neither `setFields` nor `delete` and so would do nothing.
 
 A paused `Kafka` with no pod set reports unhealthy for the whole window. As with MariaDB, add the ArgoCD annotation to the `setFields` of the `Kafka` entry:
 

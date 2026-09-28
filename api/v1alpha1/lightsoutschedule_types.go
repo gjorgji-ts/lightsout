@@ -150,6 +150,25 @@ type FieldPatch struct {
 	Value apiextensionsv1.JSON `json:"value"`
 }
 
+// FieldMatch asserts that a field on a custom resource holds a given value.
+type FieldMatch struct {
+	// Path is an RFC 6901 JSON Pointer to the field, for example "/status/phase"
+	// or "/status/conditions/0/status". "~1" escapes a literal "/" inside a
+	// segment, and "~0" a literal "~".
+	//
+	// A "*" segment matches every element of an array or every key of an
+	// object, and every match must then hold the value. A path that matches
+	// nothing, or a field that is absent, does not hold.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:Pattern=`^/.*$`
+	Path string `json:"path"`
+
+	// Value is the value the field must hold.
+	// +kubebuilder:validation:Required
+	Value apiextensionsv1.JSON `json:"value"`
+}
+
 // CustomResourceConfig declares how to turn one kind of operator-managed custom
 // resource off during the downscale window.
 //
@@ -185,6 +204,20 @@ type CustomResourceConfig struct {
 	// SetFields are applied on downscale and reverted on upscale.
 	// +optional
 	SetFields []FieldPatch `json:"setFields,omitempty"`
+
+	// ReadyWhen declares how this kind reports that it is serving again. Use it
+	// for an operator whose custom resource carries neither a status condition
+	// of type Ready nor status.observedGeneration. Every entry must hold before
+	// upscale lets the application workloads through.
+	//
+	// When omitted, those two conventions are used instead, and a resource
+	// publishing neither is judged only by the workloads in its namespace.
+	//
+	// This decides when the warmup gate opens. Point it at a status field the
+	// operator writes once the service accepts connections, not at one it sets
+	// as soon as it starts working.
+	// +optional
+	ReadyWhen []FieldMatch `json:"readyWhen,omitempty"`
 
 	// Delete removes matching resources on downscale instead of patching them,
 	// relying on the owning operator to recreate them on upscale. This exists

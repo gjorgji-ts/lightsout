@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package jsonpointer
 
 import (
 	"reflect"
@@ -42,7 +42,7 @@ func TestParsePointer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parsePointer(tt.pointer)
+			got, err := Parse(tt.pointer)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for %q, got %v", tt.pointer, got)
@@ -53,7 +53,7 @@ func TestParsePointer(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("parsePointer(%q) = %v, want %v", tt.pointer, got, tt.want)
+				t.Errorf("Parse(%q) = %v, want %v", tt.pointer, got, tt.want)
 			}
 		})
 	}
@@ -66,12 +66,12 @@ func TestFormatPointerRoundTrips(t *testing.T) {
 		"/spec/nodeSets/0/count",
 		"/spec/a~0b",
 	} {
-		tokens, err := parsePointer(pointer)
+		tokens, err := Parse(pointer)
 		if err != nil {
-			t.Fatalf("parsePointer(%q): %v", pointer, err)
+			t.Fatalf("Parse(%q): %v", pointer, err)
 		}
-		if got := formatPointer(tokens); got != pointer {
-			t.Errorf("formatPointer(parsePointer(%q)) = %q", pointer, got)
+		if got := Format(tokens); got != pointer {
+			t.Errorf("Format(Parse(%q)) = %q", pointer, got)
 		}
 	}
 }
@@ -118,13 +118,13 @@ func TestExpandPointer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tokens, err := parsePointer(tt.pointer)
+			tokens, err := Parse(tt.pointer)
 			if err != nil {
-				t.Fatalf("parsePointer: %v", err)
+				t.Fatalf("Parse: %v", err)
 			}
-			got := expandPointer(doc, tokens)
+			got := Expand(doc, tokens)
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("expandPointer(%q) = %v, want %v", tt.pointer, got, tt.want)
+				t.Errorf("Expand(%q) = %v, want %v", tt.pointer, got, tt.want)
 			}
 		})
 	}
@@ -141,10 +141,10 @@ func TestSetGetDeletePointerValue(t *testing.T) {
 
 	t.Run("set existing scalar inside array element", func(t *testing.T) {
 		tokens := []string{"spec", "nodeSets", "0", "count"}
-		if err := setPointerValue(doc, tokens, int64(0)); err != nil {
-			t.Fatalf("setPointerValue: %v", err)
+		if err := SetValue(doc, tokens, int64(0)); err != nil {
+			t.Fatalf("SetValue: %v", err)
 		}
-		got, ok := getPointerValue(doc, tokens)
+		got, ok := GetValue(doc, tokens)
 		if !ok || got != int64(0) {
 			t.Errorf("after set: got %v (present=%v), want 0", got, ok)
 		}
@@ -152,13 +152,13 @@ func TestSetGetDeletePointerValue(t *testing.T) {
 
 	t.Run("set creates intermediate objects", func(t *testing.T) {
 		tokens := []string{"metadata", "annotations", "cnpg.io/hibernation"}
-		if _, ok := getPointerValue(doc, tokens); ok {
+		if _, ok := GetValue(doc, tokens); ok {
 			t.Fatal("expected annotation to be absent before set")
 		}
-		if err := setPointerValue(doc, tokens, "on"); err != nil {
-			t.Fatalf("setPointerValue: %v", err)
+		if err := SetValue(doc, tokens, "on"); err != nil {
+			t.Fatalf("SetValue: %v", err)
 		}
-		got, ok := getPointerValue(doc, tokens)
+		got, ok := GetValue(doc, tokens)
 		if !ok || got != "on" {
 			t.Errorf("after set: got %v (present=%v), want \"on\"", got, ok)
 		}
@@ -166,22 +166,22 @@ func TestSetGetDeletePointerValue(t *testing.T) {
 
 	t.Run("delete removes the field entirely", func(t *testing.T) {
 		tokens := []string{"metadata", "annotations", "cnpg.io/hibernation"}
-		if err := deletePointerValue(doc, tokens); err != nil {
-			t.Fatalf("deletePointerValue: %v", err)
+		if err := DeleteValue(doc, tokens); err != nil {
+			t.Fatalf("DeleteValue: %v", err)
 		}
-		if _, ok := getPointerValue(doc, tokens); ok {
+		if _, ok := GetValue(doc, tokens); ok {
 			t.Error("expected annotation to be absent after delete")
 		}
 	})
 
 	t.Run("array index out of range is an error", func(t *testing.T) {
-		if err := setPointerValue(doc, []string{"spec", "nodeSets", "7", "count"}, int64(0)); err == nil {
+		if err := SetValue(doc, []string{"spec", "nodeSets", "7", "count"}, int64(0)); err == nil {
 			t.Error("expected an error for an out-of-range array index")
 		}
 	})
 
 	t.Run("delete of a missing parent is a no-op", func(t *testing.T) {
-		if err := deletePointerValue(doc, []string{"status", "gone", "field"}); err != nil {
+		if err := DeleteValue(doc, []string{"status", "gone", "field"}); err != nil {
 			t.Errorf("expected no error, got %v", err)
 		}
 	})
@@ -190,20 +190,20 @@ func TestSetGetDeletePointerValue(t *testing.T) {
 func TestNormalizeJSONValue(t *testing.T) {
 	// Replica counts decode from JSON as float64 but must round-trip through an
 	// unstructured object as integers.
-	if got := normalizeJSONValue(float64(3)); got != int64(3) {
-		t.Errorf("normalizeJSONValue(3.0) = %#v, want int64(3)", got)
+	if got := NormalizeValue(float64(3)); got != int64(3) {
+		t.Errorf("NormalizeValue(3.0) = %#v, want int64(3)", got)
 	}
-	if got := normalizeJSONValue(float64(1.5)); got != 1.5 {
-		t.Errorf("normalizeJSONValue(1.5) = %#v, want 1.5", got)
+	if got := NormalizeValue(float64(1.5)); got != 1.5 {
+		t.Errorf("NormalizeValue(1.5) = %#v, want 1.5", got)
 	}
-	if got := normalizeJSONValue("on"); got != "on" {
-		t.Errorf("normalizeJSONValue(\"on\") = %#v", got)
+	if got := NormalizeValue("on"); got != "on" {
+		t.Errorf("NormalizeValue(\"on\") = %#v", got)
 	}
-	if got := normalizeJSONValue(true); got != true {
-		t.Errorf("normalizeJSONValue(true) = %#v", got)
+	if got := NormalizeValue(true); got != true {
+		t.Errorf("NormalizeValue(true) = %#v", got)
 	}
 
-	nested := normalizeJSONValue(map[string]any{
+	nested := NormalizeValue(map[string]any{
 		"count": float64(2),
 		"list":  []any{float64(1), "x"},
 	})
@@ -212,6 +212,6 @@ func TestNormalizeJSONValue(t *testing.T) {
 		"list":  []any{int64(1), "x"},
 	}
 	if !reflect.DeepEqual(nested, want) {
-		t.Errorf("normalizeJSONValue(nested) = %#v, want %#v", nested, want)
+		t.Errorf("NormalizeValue(nested) = %#v, want %#v", nested, want)
 	}
 }

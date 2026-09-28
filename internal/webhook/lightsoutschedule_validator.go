@@ -34,6 +34,7 @@ import (
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 	"github.com/gjorgji-ts/lightsout/internal/constants"
+	"github.com/gjorgji-ts/lightsout/internal/jsonpointer"
 )
 
 var lightsoutschedulelog = logf.Log.WithName("lightsoutschedule-resource")
@@ -296,6 +297,17 @@ func ValidateScheduleCore(core *lightsoutv1alpha1.LightsOutScheduleCore) error {
 		}
 	}
 
+	// Validate custom resource config
+	allErrs = append(allErrs, ValidateCustomResources(core.CustomResources)...)
+
+	if core.CustomResourceWarmupTimeout != nil && core.CustomResourceWarmupTimeout.Duration <= 0 {
+		allErrs = append(allErrs, field.Invalid(
+			field.NewPath("spec", "customResourceWarmupTimeout"),
+			core.CustomResourceWarmupTimeout.Duration,
+			"must be positive",
+		))
+	}
+
 	if len(allErrs) == 0 {
 		return nil
 	}
@@ -341,6 +353,75 @@ func validateCronExpression(expr string) error {
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	_, err := parser.Parse(expr)
 	return err
+}
+
+// ValidateCustomResources validates the custom resource entries of a schedule.
+//
+// The JSON Pointers are parsed here because the controller cannot report a bad one.
+// It finds the mistake at the first upscale, in a log line, hours after the schedule
+// was applied. The same goes for an entry that turns out to do nothing.
+func ValidateCustomResources(customResources []lightsoutv1alpha1.CustomResourceConfig) field.ErrorList {
+	var errs field.ErrorList
+
+	for i := range customResources {
+		cfg := &customResources[i]
+		path := field.NewPath("spec", "customResources").Index(i)
+
+		// Delete short-circuits the whole entry. Nothing is patched on the way down
+		// and nothing is waited on on the way up, so either field is dead weight that
+		// reads as if it still applies.
+		if cfg.Delete {
+			if len(cfg.SetFields) > 0 {
+				errs = append(errs, field.Forbidden(
+					path.Child("setFields"),
+					"cannot be combined with delete: the resource is removed rather than patched",
+				))
+			}
+			if len(cfg.ReadyWhen) > 0 {
+				errs = append(errs, field.Forbidden(
+					path.Child("readyWhen"),
+					"cannot be combined with delete: a deleted resource is not waited on",
+				))
+			}
+		} else if len(cfg.SetFields) == 0 {
+			errs = append(errs, field.Required(
+				path.Child("setFields"),
+				"an entry must either set fields or set delete, otherwise it does nothing",
+			))
+		}
+
+		for j := range cfg.SetFields {
+			errs = append(errs, validatePointerAndValue(
+				path.Child("setFields").Index(j),
+				cfg.SetFields[j].Path,
+				cfg.SetFields[j].Value.Raw,
+			)...)
+		}
+
+		for j := range cfg.ReadyWhen {
+			errs = append(errs, validatePointerAndValue(
+				path.Child("readyWhen").Index(j),
+				cfg.ReadyWhen[j].Path,
+				cfg.ReadyWhen[j].Value.Raw,
+			)...)
+		}
+	}
+
+	return errs
+}
+
+// validatePointerAndValue checks the path and value shared by FieldPatch and FieldMatch.
+func validatePointerAndValue(path *field.Path, pointer string, raw []byte) field.ErrorList {
+	var errs field.ErrorList
+
+	if _, err := jsonpointer.Parse(pointer); err != nil {
+		errs = append(errs, field.Invalid(path.Child("path"), pointer, err.Error()))
+	}
+	if len(raw) == 0 {
+		errs = append(errs, field.Required(path.Child("value"), "must be set"))
+	}
+
+	return errs
 }
 
 // ValidateRateLimit validates a RateLimitConfig

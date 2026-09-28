@@ -206,7 +206,8 @@ func LabelArgoCDAppWarmingUp(ctx context.Context, c client.Client, app *unstruct
 	return false, nil
 }
 
-// CheckWorkloadReadiness reports whether the given namespace is fully up.
+// CheckWorkloadReadiness reports whether the given namespace is fully up, and
+// whether it held anything to judge that on.
 //
 // Deployments and StatefulSets must have every desired replica ready. Those at
 // zero replicas are deliberately down, so they are skipped. Pods that neither
@@ -216,10 +217,16 @@ func LabelArgoCDAppWarmingUp(ctx context.Context, c client.Client, app *unstruct
 //
 // Every workload in the namespace counts, not only the subset lightsout scaled,
 // so the warming-up signal reflects the namespace rather than a slice of it.
-func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace string) (bool, error) {
+//
+// The observed return separates "nothing is not-ready" from "everything is ready".
+// A namespace whose workloads do not exist yet satisfies the first and not the
+// second. The operator has not built them, or the node pool they need is still
+// scaling up from zero. A caller waiting for those workloads to appear must not
+// read that silence as readiness.
+func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace string) (ready bool, observed bool, err error) {
 	var deployments appsv1.DeploymentList
 	if err := c.List(ctx, &deployments, client.InNamespace(namespace)); err != nil {
-		return false, err
+		return false, false, err
 	}
 	for _, d := range deployments.Items {
 		desired := int32(1)
@@ -229,14 +236,15 @@ func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace stri
 		if desired == 0 {
 			continue
 		}
+		observed = true
 		if d.Status.ReadyReplicas < desired {
-			return false, nil
+			return false, true, nil
 		}
 	}
 
 	var statefulsets appsv1.StatefulSetList
 	if err := c.List(ctx, &statefulsets, client.InNamespace(namespace)); err != nil {
-		return false, err
+		return false, false, err
 	}
 	for _, s := range statefulsets.Items {
 		desired := int32(1)
@@ -246,25 +254,27 @@ func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace stri
 		if desired == 0 {
 			continue
 		}
+		observed = true
 		if s.Status.ReadyReplicas < desired {
-			return false, nil
+			return false, true, nil
 		}
 	}
 
 	var pods corev1.PodList
 	if err := c.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
-		return false, err
+		return false, false, err
 	}
 	for _, p := range pods.Items {
 		if !podCountsForReadiness(&p) {
 			continue
 		}
+		observed = true
 		if !isPodReady(&p) {
-			return false, nil
+			return false, true, nil
 		}
 	}
 
-	return true, nil
+	return true, observed, nil
 }
 
 // podCountsForReadiness reports whether a pod's readiness says anything about the
@@ -401,7 +411,9 @@ func handleArgoCDWarmup(
 			ready := timedOut
 			if !ready && destNS != "" {
 				var readErr error
-				ready, readErr = CheckWorkloadReadiness(ctx, c, destNS)
+				// These run after the scaler, so an empty namespace really is nothing
+				// to wait for rather than something that has not started yet.
+				ready, _, readErr = CheckWorkloadReadiness(ctx, c, destNS)
 				if readErr != nil {
 					logger.Error(readErr, "failed to check workload readiness, will retry",
 						"app", app.GetName(), "namespace", destNS)

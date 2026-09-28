@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -34,6 +35,7 @@ import (
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
 	"github.com/gjorgji-ts/lightsout/internal/constants"
+	"github.com/gjorgji-ts/lightsout/internal/jsonpointer"
 )
 
 // capturedField records what a field looked like before downscale overwrote it.
@@ -129,7 +131,7 @@ func TurnCustomResourceDown(
 	captured := make(map[string]capturedField)
 
 	for _, field := range cfg.SetFields {
-		tokens, err := parsePointer(field.Path)
+		tokens, err := jsonpointer.Parse(field.Path)
 		if err != nil {
 			return false, fmt.Errorf("field %q: %w", field.Path, err)
 		}
@@ -138,20 +140,20 @@ func TurnCustomResourceDown(
 		if err := json.Unmarshal(field.Value.Raw, &value); err != nil {
 			return false, fmt.Errorf("field %q: decoding value: %w", field.Path, err)
 		}
-		value = normalizeJSONValue(value)
+		value = jsonpointer.NormalizeValue(value)
 
-		paths := expandPointer(obj.Object, tokens)
+		paths := jsonpointer.Expand(obj.Object, tokens)
 		if len(paths) == 0 {
 			logger.Info("field path matched nothing on custom resource, skipping field", "path", field.Path)
 			continue
 		}
 
 		for _, path := range paths {
-			previous, present := getPointerValue(obj.Object, path)
-			captured[formatPointer(path)] = capturedField{Present: present, Value: previous}
+			previous, present := jsonpointer.GetValue(obj.Object, path)
+			captured[jsonpointer.Format(path)] = capturedField{Present: present, Value: previous}
 
-			if err := setPointerValue(obj.Object, path, value); err != nil {
-				return false, fmt.Errorf("field %q: %w", formatPointer(path), err)
+			if err := jsonpointer.SetValue(obj.Object, path, value); err != nil {
+				return false, fmt.Errorf("field %q: %w", jsonpointer.Format(path), err)
 			}
 		}
 	}
@@ -234,17 +236,17 @@ func RestoreCustomResourceFields(
 	}
 
 	for pointer, field := range captured {
-		tokens, err := parsePointer(pointer)
+		tokens, err := jsonpointer.Parse(pointer)
 		if err != nil {
 			return false, fmt.Errorf("captured field %q: %w", pointer, err)
 		}
 		if field.Present {
-			if err := setPointerValue(obj.Object, tokens, normalizeJSONValue(field.Value)); err != nil {
+			if err := jsonpointer.SetValue(obj.Object, tokens, jsonpointer.NormalizeValue(field.Value)); err != nil {
 				return false, fmt.Errorf("restoring %q: %w", pointer, err)
 			}
 			continue
 		}
-		if err := deletePointerValue(obj.Object, tokens); err != nil {
+		if err := jsonpointer.DeleteValue(obj.Object, tokens); err != nil {
 			return false, fmt.Errorf("removing %q: %w", pointer, err)
 		}
 	}
@@ -508,16 +510,30 @@ func handleCustomResourceWarmup(
 			timedOut := now.Sub(warmingUpSince) >= warmupTimeout
 
 			ns := obj.GetNamespace()
-			ready, checked := readiness[ns]
+			nsReady, checked := readiness[ns]
 			if !checked {
+				observed := false
 				var readErr error
-				ready, readErr = CheckWorkloadReadiness(ctx, c, ns)
+				nsReady, observed, readErr = CheckWorkloadReadiness(ctx, c, ns)
 				if readErr != nil {
 					logger.Error(readErr, "failed to check workload readiness, will retry", "namespace", ns)
 					stillWarmingUp = true
 					continue
 				}
-				readiness[ns] = ready
+				// A namespace holding nothing yet is not a namespace that is up. The
+				// operator has not built its workloads, or the nodes to run them are
+				// still scaling up. Either way the pods this gate waits for are not
+				// scheduled.
+				nsReady = nsReady && observed
+				readiness[ns] = nsReady
+			}
+
+			// The operator's own verdict on the resource outranks the namespace scan.
+			// That scan cannot tell a workload that has not appeared yet from one that
+			// is not coming. Both must agree before the applications are let through.
+			ready := nsReady
+			if crReady, reported := customResourceReady(ctx, obj, cfg); reported {
+				ready = ready && crReady
 			}
 
 			if !ready && !timedOut {
@@ -541,6 +557,92 @@ func handleCustomResourceWarmup(
 	}
 
 	return stillWarmingUp
+}
+
+// customResourceReady reports the owning operator's verdict on a restored resource,
+// and whether it gave one at all.
+//
+// A ReadyWhen config answers it outright: it is declared precisely because the
+// conventions below do not fit this kind.
+//
+// Otherwise two API conventions cover it. An operator that has not written
+// status.observedGeneration back up to the restored spec's generation has not acted
+// on the restore yet. Its conditions still say what they said before the downscale.
+// Once it has caught up, a condition of type Ready is its own answer on whether the
+// database or broker is serving.
+//
+// Resources carrying neither leave the caller to judge by the workloads instead.
+func customResourceReady(
+	ctx context.Context,
+	obj *unstructured.Unstructured,
+	cfg *lightsoutv1alpha1.CustomResourceConfig,
+) (ready bool, reported bool) {
+	if len(cfg.ReadyWhen) > 0 {
+		return matchesReadyWhen(ctx, obj, cfg.ReadyWhen), true
+	}
+
+	observedGen, found, err := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	if err == nil && found && observedGen < obj.GetGeneration() {
+		return false, true
+	}
+
+	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil || !found {
+		return false, false
+	}
+	for _, entry := range conditions {
+		condition, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if condition["type"] != "Ready" {
+			continue
+		}
+		status, _ := condition["status"].(string)
+		return status == "True", true
+	}
+
+	return false, false
+}
+
+// matchesReadyWhen reports whether every declared match holds on the resource.
+//
+// A path that resolves to nothing, or a field that is absent, does not hold. The
+// operator has not written that part of the status yet, which is the state the gate
+// exists to wait out. A malformed pointer is the same answer, logged so the schedule
+// author sees why the resource never reports ready.
+func matchesReadyWhen(ctx context.Context, obj *unstructured.Unstructured, matches []lightsoutv1alpha1.FieldMatch) bool {
+	logger := log.FromContext(ctx)
+
+	for _, match := range matches {
+		tokens, err := jsonpointer.Parse(match.Path)
+		if err != nil {
+			logger.Error(err, "invalid readyWhen path, treating custom resource as not ready",
+				"customResource", obj.GetName(), "path", match.Path)
+			return false
+		}
+
+		var want any
+		if err := json.Unmarshal(match.Value.Raw, &want); err != nil {
+			logger.Error(err, "invalid readyWhen value, treating custom resource as not ready",
+				"customResource", obj.GetName(), "path", match.Path)
+			return false
+		}
+		want = jsonpointer.NormalizeValue(want)
+
+		paths := jsonpointer.Expand(obj.Object, tokens)
+		if len(paths) == 0 {
+			return false
+		}
+		for _, path := range paths {
+			got, present := jsonpointer.GetValue(obj.Object, path)
+			if !present || !reflect.DeepEqual(got, want) {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // restoreAllCustomResources returns every custom resource this schedule owns to its

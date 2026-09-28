@@ -140,7 +140,7 @@ This keeps the controller responsive during a large run. A spec change, a suspen
 - **Discovers** matching resources in the target namespaces, narrowed by the optional `name` and `matchLabels`
 - **Captures** the current value of every configured field into the `original-fields` annotation, recording whether each field existed at all, then writes the downscale value
 - **Restores** the captured values on upscale, and removes a field that did not exist before rather than writing an empty value
-- **Waits** in `warming-up` until the workloads in that namespace report ready, or `customResourceWarmupTimeout` elapses
+- **Waits** in `warming-up` until the resource reports ready and the workloads in that namespace do too, or `customResourceWarmupTimeout` elapses
 - **Deletes** the resource instead when the entry sets `delete: true`, and leaves recreation to the owning operator
 
 Field paths are RFC 6901 JSON Pointers, with a `*` wildcard for arrays and objects (`internal/controller/jsonpointer.go`). One entry therefore covers every element of an array such as an ECK `spec.nodeSets`, whatever its length.
@@ -239,7 +239,14 @@ The **validating webhook** rejects a schedule that carries:
 - A timezone that is not a recognised IANA name
 - A rate limit with a batch size below 1, or a negative delay
 - An ArgoCD namespace that is not a valid DNS label
-- An `argoCD.warmupTimeout` of zero or less
+- An `argoCD.warmupTimeout`, or a `customResourceWarmupTimeout`, of zero or less
+- A malformed JSON Pointer, or a missing value, in a `setFields` or `readyWhen` entry
+- A `customResources` entry that combines `delete` with `setFields` or `readyWhen`
+- A `customResources` entry that sets neither `setFields` nor `delete`, and so does nothing
+
+The pointer checks matter more than they look. The controller cannot report a bad
+pointer: it finds out at the first upscale, in a log line, hours after the schedule
+was applied.
 
 It warns, and still admits, when a schedule overlaps an existing one.
 
