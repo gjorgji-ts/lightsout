@@ -96,7 +96,7 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 E2E_TIMEOUT ?= 60m
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: reject-operator-arg setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v -timeout $(E2E_TIMEOUT)
 	$(MAKE) cleanup-test-e2e
 
@@ -118,6 +118,14 @@ E2E_REUSE ?= false
 # Guard runs before setup-test-e2e so a missing OPERATOR does not leave a Kind
 # cluster behind.
 .PHONY: check-operator-arg
+.PHONY: reject-operator-arg
+reject-operator-arg:
+	@if [ -n "$(OPERATOR)" ]; then \
+		echo "OPERATOR is only read by test-e2e-operator. This target ignores it and runs the core suite."; \
+		echo "  make test-e2e-operator OPERATOR=$(OPERATOR)"; \
+		exit 1; \
+	fi
+
 check-operator-arg:
 	@if [ -z "$(OPERATOR)" ]; then \
 		echo "Set OPERATOR to one or more of: rabbitmq clickhouse cnpg eck keycloak mariadb redis strimzi starrocks starrocks-shared (or 'all')."; \
