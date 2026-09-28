@@ -377,7 +377,9 @@ func handleFluxCDWarmup(
 			ready := timedOut
 			if !ready {
 				var readErr error
-				ready, readErr = CheckWorkloadReadiness(ctx, c, targetNS)
+				// These run after the scaler, so an empty namespace really is nothing
+				// to wait for rather than something that has not started yet.
+				ready, _, readErr = CheckWorkloadReadiness(ctx, c, targetNS)
 				if readErr != nil {
 					logger.Error(readErr, "failed to check workload readiness, will retry",
 						"resource", obj.GetName(), "namespace", targetNS)

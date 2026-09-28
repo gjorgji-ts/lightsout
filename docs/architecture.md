@@ -140,7 +140,7 @@ This keeps the controller responsive during a large run. A spec change, a suspen
 - **Discovers** matching resources in the target namespaces, narrowed by the optional `name` and `matchLabels`
 - **Captures** the current value of every configured field into the `original-fields` annotation, recording whether each field existed at all, then writes the downscale value
 - **Restores** the captured values on upscale, and removes a field that did not exist before rather than writing an empty value
-- **Waits** in `warming-up` until the workloads in that namespace report ready, or `customResourceWarmupTimeout` elapses
+- **Waits** in `warming-up` until the resource reports ready and the workloads in that namespace do too, or `customResourceWarmupTimeout` elapses
 - **Deletes** the resource instead when the entry sets `delete: true`, and leaves recreation to the owning operator
 
 Field paths are RFC 6901 JSON Pointers, with a `*` wildcard for arrays and objects (`internal/controller/jsonpointer.go`). One entry therefore covers every element of an array such as an ECK `spec.nodeSets`, whatever its length.

@@ -378,6 +378,57 @@ func TestHandleCustomResourceWarmup(t *testing.T) {
 		}
 	})
 
+	// The failure this guards: an upscale that fires while the node pool is still at
+	// zero finds an empty namespace, reads "nothing is not-ready" as "everything is
+	// ready" and lets the applications start against a database that has not been
+	// scheduled yet.
+	t.Run("holds while the operator has created nothing yet", func(t *testing.T) {
+		cluster, _ := warmingUp(0, now.Add(-time.Minute))
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster).Build()
+
+		if !handleCustomResourceWarmup(context.Background(), c, nil, cluster, core, "sched", []string{"apps"}, now) {
+			t.Error("expected warmup to hold while the namespace is still empty")
+		}
+		got := getUnstructured(t, c, cluster)
+		if got.GetLabels()[constants.StateLabel] != constants.StateWarmingUp {
+			t.Error("resource should stay in warming-up while its workloads do not exist")
+		}
+	})
+
+	t.Run("holds while the resource itself reports not ready", func(t *testing.T) {
+		cluster, sts := warmingUp(3, now.Add(-time.Minute))
+		setReadyCondition(t, cluster, "False")
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, sts).Build()
+
+		if !handleCustomResourceWarmup(context.Background(), c, nil, cluster, core, "sched", []string{"apps"}, now) {
+			t.Error("expected warmup to hold while the operator reports the resource not ready")
+		}
+	})
+
+	t.Run("holds until the operator observes the restored spec", func(t *testing.T) {
+		cluster, sts := warmingUp(3, now.Add(-time.Minute))
+		cluster.SetGeneration(4)
+		setNestedInt64(t, cluster, 3, "status", "observedGeneration")
+		setReadyCondition(t, cluster, "True")
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, sts).Build()
+
+		if !handleCustomResourceWarmup(context.Background(), c, nil, cluster, core, "sched", []string{"apps"}, now) {
+			t.Error("expected warmup to hold while the operator has not reconciled the restore")
+		}
+	})
+
+	t.Run("releases once the resource reports ready", func(t *testing.T) {
+		cluster, sts := warmingUp(3, now.Add(-time.Minute))
+		cluster.SetGeneration(4)
+		setNestedInt64(t, cluster, 4, "status", "observedGeneration")
+		setReadyCondition(t, cluster, "True")
+		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, sts).Build()
+
+		if handleCustomResourceWarmup(context.Background(), c, nil, cluster, core, "sched", []string{"apps"}, now) {
+			t.Error("expected warmup to finish once the operator reports ready")
+		}
+	})
+
 	t.Run("releases when the timeout elapses", func(t *testing.T) {
 		cluster, sts := warmingUp(0, now.Add(-30*time.Minute))
 		c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cluster, sts).Build()
@@ -390,6 +441,23 @@ func TestHandleCustomResourceWarmup(t *testing.T) {
 			t.Error("state label should be cleared after the warmup timeout")
 		}
 	})
+}
+
+// setReadyCondition writes the status condition an operator uses to report that the
+// resource it manages is serving.
+func setReadyCondition(t *testing.T, obj *unstructured.Unstructured, status string) {
+	t.Helper()
+	conditions := []any{map[string]any{"type": "Ready", "status": status}}
+	if err := unstructured.SetNestedSlice(obj.Object, conditions, "status", "conditions"); err != nil {
+		t.Fatalf("setting ready condition: %v", err)
+	}
+}
+
+func setNestedInt64(t *testing.T, obj *unstructured.Unstructured, value int64, fields ...string) {
+	t.Helper()
+	if err := unstructured.SetNestedField(obj.Object, value, fields...); err != nil {
+		t.Fatalf("setting %v: %v", fields, err)
+	}
 }
 
 func TestDiscoverCustomResources_FiltersByNameAndLabels(t *testing.T) {

@@ -509,16 +509,30 @@ func handleCustomResourceWarmup(
 			timedOut := now.Sub(warmingUpSince) >= warmupTimeout
 
 			ns := obj.GetNamespace()
-			ready, checked := readiness[ns]
+			nsReady, checked := readiness[ns]
 			if !checked {
+				observed := false
 				var readErr error
-				ready, readErr = CheckWorkloadReadiness(ctx, c, ns)
+				nsReady, observed, readErr = CheckWorkloadReadiness(ctx, c, ns)
 				if readErr != nil {
 					logger.Error(readErr, "failed to check workload readiness, will retry", "namespace", ns)
 					stillWarmingUp = true
 					continue
 				}
-				readiness[ns] = ready
+				// A namespace holding nothing yet is not a namespace that is up. The
+				// operator has not built its workloads, or the nodes to run them are
+				// still scaling up. Either way the pods this gate waits for are not
+				// scheduled.
+				nsReady = nsReady && observed
+				readiness[ns] = nsReady
+			}
+
+			// The operator's own verdict on the resource outranks the namespace scan.
+			// That scan cannot tell a workload that has not appeared yet from one that
+			// is not coming. Both must agree before the applications are let through.
+			ready := nsReady
+			if crReady, reported := customResourceReady(obj); reported {
+				ready = ready && crReady
 			}
 
 			if !ready && !timedOut {
@@ -542,6 +556,41 @@ func handleCustomResourceWarmup(
 	}
 
 	return stillWarmingUp
+}
+
+// customResourceReady reports the owning operator's verdict on a restored resource,
+// and whether it gave one at all.
+//
+// Two API conventions cover it. An operator that has not written
+// status.observedGeneration back up to the restored spec's generation has not acted
+// on the restore yet. Its conditions still say what they said before the downscale.
+// Once it has caught up, a condition of type Ready is its own answer on whether the
+// database or broker is serving.
+//
+// Resources carrying neither leave the caller to judge by the workloads instead.
+func customResourceReady(obj *unstructured.Unstructured) (ready bool, reported bool) {
+	observedGen, found, err := unstructured.NestedInt64(obj.Object, "status", "observedGeneration")
+	if err == nil && found && observedGen < obj.GetGeneration() {
+		return false, true
+	}
+
+	conditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil || !found {
+		return false, false
+	}
+	for _, entry := range conditions {
+		condition, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if condition["type"] != "Ready" {
+			continue
+		}
+		status, _ := condition["status"].(string)
+		return status == "True", true
+	}
+
+	return false, false
 }
 
 // restoreAllCustomResources returns every custom resource this schedule owns to its
