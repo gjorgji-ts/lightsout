@@ -167,7 +167,7 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 	if deferWorkloadScaleUp {
 		logger.Info("custom resources still warming up, deferring workload scale-up")
 	} else {
-		scaleResult, err = r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit)
+		scaleResult, err = r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit, r.carriedWaveProgress(&schedule, period), now)
 		if err != nil {
 			logger.Error(err, "failed to scale workloads")
 			r.setErrorCondition(ctx, &schedule, err)
@@ -175,8 +175,10 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 		}
 	}
 
-	stillWarmingUp := deferWorkloadScaleUp
-	if scaleUp && !deferWorkloadScaleUp {
+	// A wave boundary is a warming-up state of its own on the way up. The workloads
+	// behind it are still at zero, so the schedule is not yet serving.
+	stillWarmingUp := deferWorkloadScaleUp || scaleUp && scaleResult.waveGateReached
+	if warmupMayStart(scaleUp, deferWorkloadScaleUp, scaleResult) {
 		stillWarmingUp = integrationsWarmup(ctx, r.Client, r.Recorder, integrations, now) || stillWarmingUp
 	}
 
@@ -198,7 +200,7 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 	schedule.Status.NextDownscaleTime = &metav1.Time{Time: period.NextDownscale}
 	schedule.Status.StuckTerminatingPods = termination.Stuck
 	schedule.Status.ScalingProgress = nil
-	if scaleResult.batchLimitReached {
+	if scaleResult.stoppedEarly() {
 		schedule.Status.ScalingProgress = &lightsoutv1alpha1.ScalingProgress{
 			Total:      scaleResult.totalWorkloads,
 			Completed:  scaleResult.totalProcessed + scaleResult.totalSkipped,
@@ -206,6 +208,7 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 			InProgress: true,
 		}
 	}
+	schedule.Status.WaveProgress = scaleResult.waveProgress
 
 	// Set Ready condition
 	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
@@ -264,6 +267,8 @@ func (r *LightsOutNamespaceScheduleReconciler) scaleWorkloads(
 	namespaces []string,
 	scaleUp bool,
 	rateLimit *lightsoutv1alpha1.RateLimitConfig,
+	waveProgress *lightsoutv1alpha1.WaveProgress,
+	now time.Time,
 ) (*scaleWorkloadsResult, error) {
 	cfg := scaleWorkloadsConfig{
 		ScheduleName:      schedule.Name,
@@ -273,8 +278,24 @@ func (r *LightsOutNamespaceScheduleReconciler) scaleWorkloads(
 		ScaleUp:           scaleUp,
 		RateLimit:         rateLimit,
 		TransferOwnership: true,
+		ScheduleObj:       schedule,
+		WaveProgress:      waveProgress,
+		Now:               now,
 	}
 	return scaleWorkloads(ctx, r.Client, &schedule.Spec.LightsOutScheduleCore, cfg, r.Recorder)
+}
+
+// carriedWaveProgress returns the sync wave progress from the previous reconcile, but
+// only when that reconcile scaled in the same direction. See the cluster-scoped
+// reconciler's method of the same name for why the direction matters.
+func (r *LightsOutNamespaceScheduleReconciler) carriedWaveProgress(
+	schedule *lightsoutv1alpha1.LightsOutNamespaceSchedule,
+	period *PeriodResult,
+) *lightsoutv1alpha1.WaveProgress {
+	if schedule.Status.State != lightsoutv1alpha1.ScheduleState(period.State) {
+		return nil
+	}
+	return schedule.Status.WaveProgress
 }
 
 // checkTermination counts terminating pods in the managed namespaces and reports

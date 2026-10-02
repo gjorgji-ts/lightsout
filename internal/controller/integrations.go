@@ -45,9 +45,9 @@ type integrationConfig struct {
 
 // integrationsDown turns every enabled integration off ahead of workload scale-down.
 //
-// Ordering matters: GitOps controllers and operators all reconcile workloads back to
+// Ordering matters. GitOps controllers and operators all reconcile workloads back to
 // their declared replica counts, so each must be told to stop before the scaler zeroes
-// anything. Failures are logged and surfaced as events but never block scaling.
+// anything. Failures are logged and surfaced as events, and never block scaling.
 func integrationsDown(
 	ctx context.Context,
 	c client.Client,
@@ -68,9 +68,9 @@ func integrationsDown(
 // integrationsUp restores custom resources ahead of workload scale-up and reports
 // whether the scaler must wait another cycle.
 //
-// Databases and message brokers are brought back first and given time to become
-// ready, so the applications that depend on them are not started against a service
-// that is still hibernating or still waiting on a node.
+// Databases and message brokers come back first, and are given time to become ready.
+// The applications that depend on them are therefore not started against a service
+// that is still hibernating, or still waiting on a node.
 func integrationsUp(
 	ctx context.Context,
 	c client.Client,
@@ -90,12 +90,24 @@ func integrationsUp(
 	return handleCustomResourceWarmup(ctx, c, recorder, cfg.ScheduleObj, cfg.Core, cfg.ScheduleName, cfg.Namespaces, now)
 }
 
+// warmupMayStart reports whether the ArgoCD and FluxCD warming-up state machines may run
+// after this scaling pass.
+//
+// They may only run once every workload has been visited. Both judge readiness per
+// namespace, and CheckWorkloadReadiness skips a workload at zero desired replicas
+// rather than waiting for it. A workload still queued behind a batch limit or a wave
+// boundary would therefore read as ready. The labels would then come off a namespace
+// that is only half up.
+func warmupMayStart(scaleUp, deferWorkloadScaleUp bool, result *scaleWorkloadsResult) bool {
+	return scaleUp && !deferWorkloadScaleUp && !result.stoppedEarly()
+}
+
 // integrationsWarmup drives the ArgoCD and FluxCD warming-up state machines after
 // workloads have been scaled up, and reports whether either is still waiting.
 //
-// Only call this once workloads are actually up: both integrations gate on workload
-// readiness, so running them while workloads are still deliberately scaled down would
-// resume them too early.
+// Only call this once the workloads are actually up. Both integrations gate on
+// workload readiness, so running them while workloads are still deliberately scaled
+// down would resume them too early.
 func integrationsWarmup(
 	ctx context.Context,
 	c client.Client,

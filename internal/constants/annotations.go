@@ -36,8 +36,8 @@ const (
 	OriginalHPAScaleUpPolicyAnnotation = AnnotationPrefix + "original-hpa-scale-up-policy"
 
 	// OriginalFieldsAnnotation stores the JSON-encoded original values of the fields
-	// LightsOut overwrote on a custom resource during downscale, keyed by the concrete
-	// JSON Pointer of each field, so upscale can restore them exactly.
+	// LightsOut overwrote on a custom resource during downscale. Each is keyed by the
+	// concrete JSON Pointer of the field, so upscale restores them exactly.
 	OriginalFieldsAnnotation = AnnotationPrefix + "original-fields"
 
 	// ManagedByAnnotation stores the name of the Schedule managing this workload
@@ -75,6 +75,11 @@ const (
 	// used to enforce the configurable warmup timeout
 	WarmingUpSinceAnnotation = AnnotationPrefix + "warming-up-since"
 
+	// ArgoCDSyncWaveAnnotation is the ArgoCD annotation that orders resources within a
+	// sync. LightsOut reads it off the workloads themselves to order scaling when
+	// spec.argoCD.syncWaves is set. It is ArgoCD's own key, not a LightsOut one.
+	ArgoCDSyncWaveAnnotation = "argocd.argoproj.io/sync-wave"
+
 	// DefaultArgoCDNamespace is the default namespace where ArgoCD Application CRDs live
 	DefaultArgoCDNamespace = "argocd"
 
@@ -100,6 +105,10 @@ const (
 	// EventReasonPodsStuckTerminating is the Kubernetes event reason string when
 	// pods outlive their termination grace period after a downscale
 	EventReasonPodsStuckTerminating = "PodsStuckTerminating"
+
+	// EventReasonSyncWaveTimeout is the Kubernetes event reason string when a sync
+	// wave does not settle within the wave timeout and scaling continues anyway
+	EventReasonSyncWaveTimeout = "SyncWaveTimeout"
 
 	// ConditionTypeReady is the status condition type reported on schedules after reconcile
 	ConditionTypeReady = "Ready"

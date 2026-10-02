@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -242,7 +243,7 @@ func TestScaleWorkloads_StatsExcludeSkippedWorkloads(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil, nil, time.Time{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestScaleWorkloads_StatsClearOnUpscale(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-schedule"},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, true, nil)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, true, nil, nil, time.Time{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -299,8 +300,8 @@ func TestScaleWorkloads_StatsClearOnUpscale(t *testing.T) {
 	}
 }
 
-// Ownership transfer writes to workloads that came from a List, so the copy in hand
-// can be stale here in the same way it is in the scaler.
+// Ownership transfer writes to workloads that came from a List. The copy in hand can
+// therefore be stale here, in the same way it is in the scaler.
 func TestCollectNamespaceDeployments_StaleCopyTransfersOwnership(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = appsv1.AddToScheme(scheme)

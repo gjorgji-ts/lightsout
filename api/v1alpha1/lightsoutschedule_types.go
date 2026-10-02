@@ -70,6 +70,22 @@ type ScalingProgress struct {
 	InProgress bool `json:"inProgress"`
 }
 
+// WaveProgress records which ArgoCD sync wave scaling is waiting on and since when,
+// so the wave timeout survives the requeue between reconciles.
+//
+// It also records how far scaling has advanced. A wave the controller has already moved
+// past is never waited on again in the same direction. A wave that timed out therefore
+// cannot restart its clock on the next reconcile and stall the schedule for good. The
+// record is dropped when the schedule changes direction, because the wave order reverses
+// with it.
+type WaveProgress struct {
+	// Wave is the sync wave whose workloads must settle before the next wave is scaled.
+	Wave int `json:"wave"`
+
+	// Since is when the wait for this wave began.
+	Since metav1.Time `json:"since"`
+}
+
 // WorkloadStats contains statistics about managed workloads
 type WorkloadStats struct {
 	// DeploymentsManaged is the total number of deployments being managed
@@ -104,9 +120,29 @@ type ArgoCDConfig struct {
 	// CRDs after upscale before removing it regardless of pod readiness.
 	// This prevents ArgoCD alerts from firing while pods are starting up.
 	// Defaults to 10 minutes.
+	//
+	// It is also the cap on how long each sync wave is waited for when SyncWaves
+	// is set.
 	// +kubebuilder:default="10m"
 	// +optional
 	WarmupTimeout *metav1.Duration `json:"warmupTimeout,omitempty"`
+
+	// SyncWaves orders scaling by the argocd.argoproj.io/sync-wave annotation that
+	// ArgoCD applies to the workloads themselves: ascending on upscale, descending
+	// on downscale. Workloads without the annotation are wave 0.
+	//
+	// Each wave must settle before the next one starts. On upscale that means every
+	// replica ready. On downscale it means every pod gone. A database therefore
+	// comes back before the applications that query it, and goes down after them.
+	// A wave that does not settle within WarmupTimeout is given up on, and the next
+	// wave starts anyway.
+	//
+	// This stretches the transition. The schedule reconciles every 30 seconds while
+	// a wave is in flight, and the full upscale takes as long as its slowest wave
+	// chain. Leave it off unless out-of-order startup actually causes trouble.
+	// +kubebuilder:default=false
+	// +optional
+	SyncWaves bool `json:"syncWaves,omitempty"`
 }
 
 // FluxCDConfig configures optional FluxCD Kustomization and HelmRelease suspension.
@@ -129,17 +165,16 @@ type FluxCDConfig struct {
 }
 
 // FieldPatch sets a single field on a custom resource during downscale.
-// The field's previous value is captured so upscale can restore it exactly,
-// which matters for replica counts whose desired value lives in Git rather
-// than in the schedule.
+// The previous value is captured, so upscale restores it exactly. This matters
+// for a replica count whose desired value lives in Git, not in the schedule.
 type FieldPatch struct {
 	// Path is an RFC 6901 JSON Pointer to the field, for example
-	// "/spec/replicas" or "/metadata/annotations/cnpg.io~1hibernation"
-	// ("~1" escapes a literal "/" inside a segment, "~0" a literal "~").
+	// "/spec/replicas" or "/metadata/annotations/cnpg.io~1hibernation".
+	// Inside a segment, "~1" escapes a literal "/" and "~0" a literal "~".
 	//
-	// A "*" segment matches every element of an array or every key of an
-	// object, so "/spec/nodeSets/*/count" targets every node set without
-	// depending on their order.
+	// A "*" segment matches every element of an array, or every key of an
+	// object. "/spec/nodeSets/*/count" therefore targets every node set,
+	// whatever their order.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=2
 	// +kubebuilder:validation:Pattern=`^/.*$`
@@ -172,10 +207,10 @@ type FieldMatch struct {
 // CustomResourceConfig declares how to turn one kind of operator-managed custom
 // resource off during the downscale window.
 //
-// Workloads created by an operator carry a controller owner reference and are
-// skipped by the scaler (see IncludeOwnedWorkloads), because the operator would
-// simply reconcile their replica count back. Turning the operator's own custom
-// resource off is the supported way to stop them.
+// A workload an operator created carries a controller owner reference, so the
+// scaler skips it (see IncludeOwnedWorkloads). The operator would reconcile its
+// replica count straight back. Turning the operator's own custom resource off is
+// the supported way to stop them.
 type CustomResourceConfig struct {
 	// Group is the API group of the custom resource, for example
 	// "postgresql.cnpg.io". Empty means the core group.
@@ -221,9 +256,9 @@ type CustomResourceConfig struct {
 
 	// Delete removes matching resources on downscale instead of patching them,
 	// relying on the owning operator to recreate them on upscale. This exists
-	// for operators that offer no off switch, such as Strimzi, where the
-	// documented way to stop a Kafka cluster is to pause reconciliation and
-	// delete the StrimziPodSet resources.
+	// for operators that offer no off switch. Strimzi is one: to stop a Kafka
+	// cluster, the documented way is to pause reconciliation, then delete the
+	// StrimziPodSet resources.
 	//
 	// Nothing is restored on upscale: recreating the resource is the operator's
 	// job once it resumes reconciling. Entries are processed in declaration
@@ -273,14 +308,14 @@ type LightsOutScheduleCore struct {
 	// another controller (they carry a controller owner reference, e.g. a
 	// StatefulSet created by a database operator from its own CRD).
 	//
-	// By default these are skipped: the owning controller reconciles the replica
-	// count back from its custom resource, so lightsout would scale the workload
-	// to zero only to have it restored, while its own annotations make subsequent
-	// reconciles treat it as already scaled down.
+	// By default these are skipped. The owning controller reconciles the replica
+	// count back from its custom resource, so LightsOut would scale the workload
+	// to zero only to have it restored. Worse, its own annotations then make the
+	// next reconcile treat the workload as already scaled down.
 	//
-	// Set this to true only when the owning controller has been paused by other
-	// means (for example an operator-specific pause or suspend annotation), so
-	// nothing will fight the scaling.
+	// Set this to true only when the owning controller is already paused by other
+	// means, such as an operator-specific pause or suspend annotation. Nothing
+	// then fights the scaling.
 	// +kubebuilder:default=false
 	// +optional
 	IncludeOwnedWorkloads bool `json:"includeOwnedWorkloads,omitempty"`
@@ -311,9 +346,9 @@ type LightsOutScheduleCore struct {
 	// downscale window and restores them on upscale. Each entry names one kind
 	// and the fields to set on it.
 	//
-	// Custom resources are turned off before workloads are scaled down, and
-	// restored before workloads are scaled up, so databases and message brokers
-	// are on their way back before the applications that depend on them start.
+	// Custom resources are turned off before the workloads are scaled down, and
+	// restored before they are scaled up. A database or a message broker is
+	// therefore on its way back before the applications that depend on it start.
 	// +optional
 	CustomResources []CustomResourceConfig `json:"customResources,omitempty"`
 
@@ -380,6 +415,11 @@ type LightsOutScheduleStatus struct {
 	// Only present while scaling is in progress.
 	// +optional
 	ScalingProgress *ScalingProgress `json:"scalingProgress,omitempty"`
+
+	// WaveProgress shows which ArgoCD sync wave scaling has reached.
+	// Only present when spec.argoCD.syncWaves is set.
+	// +optional
+	WaveProgress *WaveProgress `json:"waveProgress,omitempty"`
 
 	// StuckTerminatingPods counts pods that are still running well past their
 	// termination grace period after a downscale. Scaling a workload to zero only

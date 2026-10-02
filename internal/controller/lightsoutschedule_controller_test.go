@@ -291,7 +291,7 @@ func TestScaleWorkloads_BatchLimitReached(t *testing.T) {
 		},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, schedule.Spec.DownscaleRateLimit)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, schedule.Spec.DownscaleRateLimit, nil, time.Time{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestScaleWorkloads_SkippedDontConsumeBudget(t *testing.T) {
 		},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, schedule.Spec.DownscaleRateLimit)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, schedule.Spec.DownscaleRateLimit, nil, time.Time{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestScaleWorkloads_NoRateLimitProcessesAll(t *testing.T) {
 		Spec:       lightsoutv1alpha1.LightsOutScheduleSpec{},
 	}
 
-	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil)
+	result, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil, nil, time.Time{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3557,7 +3557,7 @@ func TestScaleWorkloads_EmitsWorkloadEvents(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "my-schedule"},
 	}
 
-	_, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil)
+	_, err := r.scaleWorkloads(context.Background(), schedule, []string{"ns1"}, false, nil, nil, time.Time{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3982,5 +3982,99 @@ func TestReconcile_FluxCDUpscale(t *testing.T) {
 	}
 	if _, exists := updatedKs.GetAnnotations()[constants.WarmingUpSinceAnnotation]; !exists {
 		t.Errorf("Kustomization should have warming-up-since annotation")
+	}
+}
+
+// The ArgoCD and FluxCD warmup state machines judge readiness per namespace. A workload
+// still queued behind the rate limit sits at zero desired replicas, which that check
+// skips rather than waits for. Starting the warmup while a batch is outstanding
+// therefore clears the labels on a namespace that is only half up.
+func TestReconcile_WarmupWaitsForEveryWorkload(t *testing.T) {
+	ClearPeriodCache()
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
+	_ = batchv1.AddToScheme(scheme)
+	_ = lightsoutv1alpha1.AddToScheme(scheme)
+
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Labels: map[string]string{"env": "dev"}},
+	}
+
+	down := func(name string) *appsv1.Deployment {
+		return &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "dev",
+				Annotations: map[string]string{
+					constants.OriginalReplicasAnnotation: "3",
+					constants.ManagedByAnnotation:        devScheduleName,
+				},
+				Labels: map[string]string{constants.ManagedByLabel: devScheduleName},
+			},
+			Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		}
+	}
+
+	argoApp := newArgoCDApp("dev-app", "dev", map[string]string{
+		constants.StateLabel:     constants.StateDown,
+		constants.ManagedByLabel: devScheduleName,
+	})
+
+	schedule := &lightsoutv1alpha1.LightsOutSchedule{
+		ObjectMeta: metav1.ObjectMeta{Name: devScheduleName},
+		Spec: lightsoutv1alpha1.LightsOutScheduleSpec{
+			LightsOutScheduleCore: lightsoutv1alpha1.LightsOutScheduleCore{
+				Upscale:   "0 4 * * *",
+				Downscale: "0 16 * * *",
+				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
+				// One workload per pass, so the first pass leaves the second one down.
+				UpscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
+					BatchSize:           ptr(1),
+					DelayBetweenBatches: &metav1.Duration{Duration: 10 * time.Second},
+				},
+			},
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"env": "dev"},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(ns, down("web"), down("worker"), argoApp, schedule).
+		WithStatusSubresource(schedule).
+		Build()
+
+	r := &LightsOutScheduleReconciler{
+		Client:   fakeClient,
+		Scheme:   scheme,
+		TimeFunc: func() time.Time { return time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC) },
+	}
+
+	// First reconcile adds the finalizer, the second scales the first batch.
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: devScheduleName}})
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKey{Name: devScheduleName}}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	var updated lightsoutv1alpha1.LightsOutSchedule
+	if err := fakeClient.Get(context.Background(), client.ObjectKey{Name: devScheduleName}, &updated); err != nil {
+		t.Fatalf("failed to get schedule: %v", err)
+	}
+	if updated.Status.ScalingProgress == nil || !updated.Status.ScalingProgress.InProgress {
+		t.Fatalf("scalingProgress = %+v, want a batch still in progress", updated.Status.ScalingProgress)
+	}
+
+	var updatedApp unstructured.Unstructured
+	updatedApp.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "argoproj.io", Version: "v1alpha1", Kind: "Application",
+	})
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(argoApp), &updatedApp); err != nil {
+		t.Fatalf("failed to get ArgoCD app: %v", err)
+	}
+	if got := updatedApp.GetLabels()[constants.StateLabel]; got != constants.StateDown {
+		t.Errorf("ArgoCD app state label = %q, want %q while a batch is outstanding", got, constants.StateDown)
 	}
 }
