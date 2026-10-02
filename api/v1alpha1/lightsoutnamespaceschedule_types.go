@@ -60,6 +60,11 @@ type LightsOutNamespaceScheduleStatus struct {
 	// +optional
 	ScalingProgress *ScalingProgress `json:"scalingProgress,omitempty"`
 
+	// WaveProgress shows which ArgoCD sync wave scaling has reached.
+	// Only present when spec.argoCD.syncWaves is set.
+	// +optional
+	WaveProgress *WaveProgress `json:"waveProgress,omitempty"`
+
 	// StuckTerminatingPods counts pods that are still running well past their
 	// termination grace period after a downscale. Scaling a workload to zero only
 	// writes the spec, so a pod the kubelet cannot kill keeps its node alive while

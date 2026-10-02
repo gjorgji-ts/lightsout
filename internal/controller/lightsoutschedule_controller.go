@@ -187,7 +187,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if deferWorkloadScaleUp {
 		logger.Info("custom resources still warming up, deferring workload scale-up")
 	} else {
-		scaleResult, err = r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit)
+		scaleResult, err = r.scaleWorkloads(ctx, &schedule, namespaces, scaleUp, rateLimit, r.carriedWaveProgress(&schedule, period), now)
 		if err != nil {
 			logger.Error(err, "failed to scale workloads")
 			r.setErrorCondition(ctx, &schedule, err)
@@ -195,8 +195,10 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 	}
 
-	stillWarmingUp := deferWorkloadScaleUp
-	if scaleUp && !deferWorkloadScaleUp {
+	// A wave boundary is a warming-up state of its own on the way up. The workloads
+	// behind it are still at zero, so the schedule is not yet serving.
+	stillWarmingUp := deferWorkloadScaleUp || scaleUp && scaleResult.waveGateReached
+	if warmupMayStart(scaleUp, deferWorkloadScaleUp, scaleResult) {
 		stillWarmingUp = integrationsWarmup(ctx, r.Client, r.Recorder, integrations, now) || stillWarmingUp
 	}
 
@@ -219,7 +221,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	schedule.Status.NextDownscaleTime = &metav1.Time{Time: period.NextDownscale}
 	schedule.Status.StuckTerminatingPods = termination.Stuck
 	schedule.Status.ScalingProgress = nil
-	if scaleResult.batchLimitReached {
+	if scaleResult.stoppedEarly() {
 		schedule.Status.ScalingProgress = &lightsoutv1alpha1.ScalingProgress{
 			Total:      scaleResult.totalWorkloads,
 			Completed:  scaleResult.totalProcessed + scaleResult.totalSkipped,
@@ -227,6 +229,7 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			InProgress: true,
 		}
 	}
+	schedule.Status.WaveProgress = scaleResult.waveProgress
 
 	// Set Ready condition
 	meta.SetStatusCondition(&schedule.Status.Conditions, metav1.Condition{
@@ -285,6 +288,8 @@ func (r *LightsOutScheduleReconciler) scaleWorkloads(
 	namespaces []string,
 	scaleUp bool,
 	rateLimit *lightsoutv1alpha1.RateLimitConfig,
+	waveProgress *lightsoutv1alpha1.WaveProgress,
+	now time.Time,
 ) (*scaleWorkloadsResult, error) {
 	cfg := scaleWorkloadsConfig{
 		ScheduleName:      schedule.Name,
@@ -294,12 +299,32 @@ func (r *LightsOutScheduleReconciler) scaleWorkloads(
 		ScaleUp:           scaleUp,
 		RateLimit:         rateLimit,
 		TransferOwnership: false,
+		ScheduleObj:       schedule,
+		WaveProgress:      waveProgress,
+		Now:               now,
 	}
 	result, err := scaleWorkloads(ctx, r.Client, &schedule.Spec.LightsOutScheduleCore, cfg, r.Recorder)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scale workloads: %w", err)
 	}
 	return result, nil
+}
+
+// carriedWaveProgress returns the sync wave progress from the previous reconcile, but
+// only when that reconcile scaled in the same direction as this one.
+//
+// The wave order reverses with the direction. A record from the other direction would
+// mark waves as already passed that have not been scaled yet, and the gates would never
+// hold. Status.State still holds the previous reconcile's state at this point, which is
+// what tells the two apart.
+func (r *LightsOutScheduleReconciler) carriedWaveProgress(
+	schedule *lightsoutv1alpha1.LightsOutSchedule,
+	period *PeriodResult,
+) *lightsoutv1alpha1.WaveProgress {
+	if schedule.Status.State != lightsoutv1alpha1.ScheduleState(period.State) {
+		return nil
+	}
+	return schedule.Status.WaveProgress
 }
 
 // checkTermination counts terminating pods in the managed namespaces and reports
@@ -393,11 +418,14 @@ func (r *LightsOutScheduleReconciler) handleDeletion(ctx context.Context, schedu
 	return ctrl.Result{}, r.Update(ctx, schedule)
 }
 
-// restoreManagedWorkloads restores every workload and integration resource this schedule
-// currently owns in the given namespaces to its original, unowned state (replicas restored,
-// managed-by annotation/label and ArgoCD/Flux state labels stripped). Shared by finalizer
-// cleanup (handleDeletion) and orphan release (releaseOrphanedNamespaces). Returns a slice
-// of human-readable errors for resources that failed to restore.
+// restoreManagedWorkloads returns every workload and integration resource this schedule
+// owns in the given namespaces to its original, unowned state. Replicas are restored.
+// The managed-by annotation, the managed-by label and the ArgoCD/Flux state labels are
+// stripped.
+//
+// Shared by finalizer cleanup (handleDeletion) and orphan release
+// (releaseOrphanedNamespaces). Returns one human-readable error per resource that
+// failed to restore.
 func (r *LightsOutScheduleReconciler) restoreManagedWorkloads(ctx context.Context, schedule *lightsoutv1alpha1.LightsOutSchedule, namespaces []string) []string {
 	logger := log.FromContext(ctx)
 	var restoreErrors []string
@@ -523,10 +551,11 @@ func (r *LightsOutScheduleReconciler) releaseOrphanedNamespaces(ctx context.Cont
 // managed-by this schedule but which are no longer in the target set. The managed-by
 // label is server-side indexed, so the cluster-wide list is cheap.
 //
-// Orphaned namespaces are derived from managed workloads (deploy/sts/cj) only.
-// An ArgoCD/Flux resource whose destination namespace has zero managed workloads would not
-// be swept here (its labels linger until the namespace is re-added or the schedule deleted).
-// We will add per-integration cluster-wide label scans if that edge case shows up in practice.
+// Orphaned namespaces are derived from managed workloads only: Deployments,
+// StatefulSets and CronJobs. An ArgoCD or Flux resource whose destination namespace
+// holds no managed workload is therefore not swept here. Its labels linger until the
+// namespace is re-added, or the schedule deleted. Per-integration cluster-wide label
+// scans can be added if that edge case shows up in practice.
 func (r *LightsOutScheduleReconciler) discoverOrphanedNamespaces(ctx context.Context, scheduleName string, targetNamespaces []string) ([]string, error) {
 	active := make(map[string]struct{}, len(targetNamespaces))
 	for _, ns := range targetNamespaces {
@@ -576,7 +605,8 @@ func (r *LightsOutScheduleReconciler) discoverOrphanedNamespaces(ctx context.Con
 
 // calculateRequeueAfter returns how long to wait before the next reconciliation.
 // Batch-limited runs requeue after the batch delay (capped at the next transition).
-// Warming-up runs requeue at WarmupCheckInterval. Otherwise, requeue at the next transition.
+// Warming-up runs, and runs holding at a sync wave boundary, requeue at
+// WarmupCheckInterval. Otherwise, requeue at the next transition.
 func calculateRequeueAfter(period *PeriodResult, scaleUp bool, scaleResult *scaleWorkloadsResult, rateLimit *lightsoutv1alpha1.RateLimitConfig, stillWarmingUp bool, now time.Time) time.Duration {
 	var timeUntilNext time.Duration
 	if scaleUp {
@@ -596,9 +626,11 @@ func calculateRequeueAfter(period *PeriodResult, scaleUp bool, scaleResult *scal
 		}
 		return max(requeueAfter, time.Second)
 	}
-	if stillWarmingUp {
-		// ArgoCD or FluxCD resources are warming up poll readiness at WarmupCheckInterval,
-		// but no later than the next period transition.
+	if stillWarmingUp || scaleResult.waveGateReached {
+		// ArgoCD or FluxCD resources are warming up, or a sync wave has not settled yet.
+		// Poll readiness at WarmupCheckInterval, but no later than the next period
+		// transition. The wave case covers both directions, because a downscale wave
+		// waits for pods to go away.
 		return max(min(constants.WarmupCheckInterval, timeUntilNext), time.Second)
 	}
 	// Defensive floor for the idle path - next transition is typically hours away.

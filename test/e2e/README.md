@@ -15,7 +15,20 @@ Both share `e2e_suite_test.go`. It builds the manager image, loads it into Kind,
 
 ## Core behaviour tests
 
-Scaling, namespace targeting, HPA, safety protections, webhooks, schedule lifecycle and namespace schedules. Run them with `make test-e2e`, which takes roughly 18 minutes. `Stuck Termination` accounts for 6 of those on its own, because it watches the count across a full check interval.
+Scaling, namespace targeting, HPA, safety protections, webhooks, schedule lifecycle, namespace schedules and sync waves. Run them with `make test-e2e`, which takes roughly 23 minutes. `Stuck Termination` accounts for 6 of those on its own, because it watches the count across a full check interval. `Sync waves` accounts for 6 more, because every wave is waited for in real time.
+
+### How the sync wave case holds a wave
+
+`Sync waves` asserts the wait rather than the order. Order alone proves nothing: every scale patch of one pass lands within milliseconds, so a sorted pass and an unsorted one look the same afterwards.
+
+Each direction therefore gets a workload that takes a known time to settle. Both container commands trap SIGTERM, so the kubelet waits out the whole grace period before SIGKILL:
+
+- `app-tier`, wave 1, grace period 90s. Slow to go away, so the downscale holds `data-tier` up behind it.
+- `data-tier`, wave -1, readiness probe delayed 30s. Slow to come up, so the upscale holds `app-tier` at zero behind it.
+
+The spec reads `status.waveProgress.wave` to check which wave the schedule is waiting on, and uses `Consistently` to check the wave behind it has not moved. Both workloads settle on their own, so neither case has to touch the cluster to finish.
+
+Sync waves need no ArgoCD on the cluster. The annotation is read off the workloads, and Application discovery no-ops when the CRD is absent.
 
 One limit is worth knowing. `Stuck Termination` covers only the negative case: a clean downscale must report no stuck pod and emit no warning.
 

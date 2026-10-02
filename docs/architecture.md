@@ -53,7 +53,7 @@ flowchart TD
     NSR --> AL
     R --> FL["FluxCD Suspender<br/>(optional)"]
     NSR --> FL
-    R --> WS["Workload Scaler<br/>(budget-based rate limiting)"]
+    R --> WS["Workload Scaler<br/>(rate limiting, sync wave order)"]
     NSR --> WS
     CRH -->|"set/restore fields"| Ops["Operator CRs<br/>(databases, brokers)"]
     AL -->|"label/unlabel"| ArgoCD["ArgoCD Application CRDs"]
@@ -154,6 +154,16 @@ RBAC cannot be generated here, because the API groups are unknown until you decl
 
 For the per-operator recipes, see [Custom resource integration](custom-resources.md).
 
+### Sync wave ordering
+
+`internal/controller/syncwave.go` orders the scaler by the `argocd.argoproj.io/sync-wave` annotation when `spec.argoCD.syncWaves` is set. It reads the annotation and writes nothing: the value belongs to ArgoCD, and a workload carrying none, or an unparseable one, is wave 0.
+
+The scaler walks the workloads in wave order, ascending on upscale and descending on downscale, and stops at the first boundary whose preceding wave has not settled. That early return is the one the rate limiter already uses, so the pass requeues and comes back 30 seconds later rather than blocking.
+
+A wave settles when every Deployment and StatefulSet in it reports all desired replicas ready, or on downscale no replicas at all. The check compares `status.observedGeneration` against the object generation first, because a workload patched moments ago still carries the status of the replica count it had before. CronJobs never hold a wave, and neither does a workload this schedule does not own.
+
+`status.waveProgress` carries the wait across reconciles, and records how far scaling has advanced. Progress is monotonic within a direction, so a wave that hit `warmupTimeout` is not waited on again. The record is dropped when the direction flips, because the wave order reverses with it.
+
 ### ArgoCD labeler
 
 `internal/controller/argocd.go` labels ArgoCD Application CRDs when `spec.argoCD` is set. It:
@@ -167,6 +177,8 @@ Ordering keeps the alert window shut:
 
 - **Downscale:** label the Applications, then scale the workloads.
 - **Upscale:** scale the workloads, move the Applications from `down` to `warming-up`, then remove the labels once the pods are ready or `warmupTimeout` elapses.
+
+The warmup only starts once the pass has visited every workload. One still held back by a rate limit or a sync wave sits at zero replicas. The readiness check skips such a workload rather than waiting for it. Without the rule, the labels would come off a namespace that is only half up.
 
 ArgoCD errors are best effort. LightsOut logs them and records events, and workload scaling continues.
 
@@ -265,6 +277,7 @@ Both schedule types report the same status. `kubectl describe` shows it in full.
 | `namespaces` | The namespaces the schedule currently manages, after discovery and filtering |
 | `workloadStats` | Managed and scaled counts, per workload type |
 | `scalingProgress` | `total`, `completed`, `failed` and `inProgress`. Present only during a batched run. |
+| `waveProgress` | The sync wave scaling has reached, and when the wait for it began. Present only while `syncWaves` is on. |
 | `stuckTerminatingPods` | Pods still running well past their termination grace period after a downscale |
 | `conditions` | Standard Kubernetes conditions, including the reason a reconcile failed |
 

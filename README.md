@@ -32,6 +32,7 @@ In the morning LightsOut restores the original replica counts, and the autoscale
 - **Namespace targeting** by label selector, explicit list, or exclusion
 - **Namespace-scoped schedules** so a team can set its own hours, which take precedence over a cluster-wide schedule
 - **Rate-limited scaling** in batches, to avoid an API spike on large clusters
+- **Sync wave ordering** so a database comes up before the applications that query it, read from the ArgoCD annotations your manifests already carry
 - **Admission webhooks** that reject invalid schedules and warn about overlaps
 - **ArgoCD and FluxCD integration** to stop false alerts and drift correction during the downscale
 - **Prometheus metrics** for schedule state, operations, errors and durations
@@ -188,6 +189,15 @@ spec:
 ```
 
 Labels alone do not stop a sync from undoing the work. ArgoCD also needs `ignoreDifferences` entries and `RespectIgnoreDifferences=true`. For those, see [ArgoCD integration](docs/argocd.md).
+
+`syncWaves: true` also scales in the order of the `argocd.argoproj.io/sync-wave` annotations your manifests already carry: ascending on upscale, descending on downscale, and each wave is waited for. A database therefore comes back before the applications that query it:
+
+```yaml
+spec:
+  argoCD:
+    syncWaves: true
+    warmupTimeout: 5m    # cap per wave
+```
 
 ### FluxCD integration
 

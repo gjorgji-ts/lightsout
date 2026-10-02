@@ -31,13 +31,15 @@ spec:
   argoCD:
     namespace: argocd          # where the Application CRDs live
     warmupTimeout: 10m         # cap on the wait for pod readiness
+    syncWaves: false           # order scaling by sync wave, see below
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `argoCD` | object | `nil` (disabled) | Enables the integration when present |
 | `argoCD.namespace` | string | `argocd` | Namespace that holds the Application CRDs |
-| `argoCD.warmupTimeout` | duration | `10m` | How long to keep the `warming-up` label after an upscale before removing it, whatever the pod state |
+| `argoCD.warmupTimeout` | duration | `10m` | How long to keep the `warming-up` label after an upscale before removing it, whatever the pod state. Also the cap on each sync wave |
+| `argoCD.syncWaves` | boolean | `false` | Scales the workloads in sync wave order, and waits for each wave |
 
 Any value enables the feature, including `{}`. Omitting the field disables it.
 
@@ -203,9 +205,61 @@ On upscale:
 
 ArgoCD therefore learns about the downscale before the pods disappear. On the way back, the pods are running and ready before the suppression signal goes away, which closes the window where startup looks like failure.
 
+Step 2 waits for step 1 to finish. While a batch limit or a sync wave holds part of the namespace at zero, the Applications keep the `down` label. The readiness check skips a workload at zero desired replicas rather than waiting for it.
+
 ### Schedule deletion
 
 The finalizer strips the labels from every Application the schedule managed before the resource goes away. It finds them through the `managed-by` label.
+
+## Sync waves
+
+ArgoCD orders the resources in a sync by the `argocd.argoproj.io/sync-wave` annotation. With `syncWaves: true`, LightsOut scales in that same order, and waits for each wave before it starts the next one.
+
+The annotation is ArgoCD's own, on the workloads themselves. LightsOut reads it and writes nothing. A workload without the annotation is wave 0, and so is one whose value is not an integer.
+
+```yaml
+spec:
+  argoCD:
+    syncWaves: true
+    warmupTimeout: 5m    # cap per wave
+```
+
+```yaml
+# The workload manifests in Git, unchanged
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"    # the database
+---
+metadata:
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"     # the API that queries it
+```
+
+The upscale brings wave -1 up, waits until every one of its replicas is ready, and then starts wave 1. The downscale runs the waves in reverse: wave 1 goes to zero first, and wave -1 waits until wave 1 has no pods left. A dependency therefore comes up before its consumers, and goes down after them.
+
+A wave spans every namespace the schedule manages. The dependency a workload waits for is often in another namespace, and per-namespace ordering could not express that.
+
+### What a wave waits for
+
+On the way up, every Deployment and StatefulSet in the wave must report all of its desired replicas ready. On the way down, each must report no replicas left, which means the pods are gone rather than only asked to stop.
+
+CronJobs never hold a wave. Suspending one stops the next job and says nothing about what is running.
+
+Workloads LightsOut does not control are not waited for either. A workload another schedule owns, or one a user parked at zero, never reaches the state the pass asked for. Waiting on it would stall every later wave.
+
+### Timeouts and cost
+
+A wave that does not settle within `warmupTimeout` is given up on, and the next wave starts anyway. LightsOut logs this and records a `SyncWaveTimeout` warning event on the schedule.
+
+Waves make a transition slower. The schedule reconciles every 30 seconds while a wave is in flight, and the full upscale takes as long as its slowest chain of waves. `status.waveProgress` reports the wave in flight and when the wait for it began.
+
+Leave `syncWaves` off unless out-of-order startup causes real trouble, such as applications that crash-loop against a database that is not back yet. Two schedules with staggered cron expressions are the cheaper answer when a fixed delay is enough.
+
+> [!NOTE]
+> Sync waves order the Deployments, StatefulSets and CronJobs. For a database or a
+> broker an operator builds from its own custom resource, use `spec.customResources`
+> instead: those are restored before any workload wave starts, and the upscale waits
+> for them. See [Custom resource integration](custom-resources.md).
 
 ## Multi-schedule safety
 

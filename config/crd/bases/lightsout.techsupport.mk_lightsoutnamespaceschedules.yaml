@@ -70,6 +70,23 @@ spec:
                     default: argocd
                     description: Namespace where ArgoCD Application CRDs live.
                     type: string
+                  syncWaves:
+                    default: false
+                    description: |-
+                      SyncWaves orders scaling by the argocd.argoproj.io/sync-wave annotation that
+                      ArgoCD applies to the workloads themselves: ascending on upscale, descending
+                      on downscale. Workloads without the annotation are wave 0.
+
+                      Each wave must settle before the next one starts. On upscale that means every
+                      replica ready. On downscale it means every pod gone. A database therefore
+                      comes back before the applications that query it, and goes down after them.
+                      A wave that does not settle within WarmupTimeout is given up on, and the next
+                      wave starts anyway.
+
+                      This stretches the transition. The schedule reconciles every 30 seconds while
+                      a wave is in flight, and the full upscale takes as long as its slowest wave
+                      chain. Leave it off unless out-of-order startup actually causes trouble.
+                    type: boolean
                   warmupTimeout:
                     default: 10m
                     description: |-
@@ -77,6 +94,9 @@ spec:
                       CRDs after upscale before removing it regardless of pod readiness.
                       This prevents ArgoCD alerts from firing while pods are starting up.
                       Defaults to 10 minutes.
+
+                      It is also the cap on how long each sync wave is waited for when SyncWaves
+                      is set.
                     type: string
                 type: object
               customResourceWarmupTimeout:
@@ -92,26 +112,26 @@ spec:
                   downscale window and restores them on upscale. Each entry names one kind
                   and the fields to set on it.
 
-                  Custom resources are turned off before workloads are scaled down, and
-                  restored before workloads are scaled up, so databases and message brokers
-                  are on their way back before the applications that depend on them start.
+                  Custom resources are turned off before the workloads are scaled down, and
+                  restored before they are scaled up. A database or a message broker is
+                  therefore on its way back before the applications that depend on it start.
                 items:
                   description: |-
                     CustomResourceConfig declares how to turn one kind of operator-managed custom
                     resource off during the downscale window.
 
-                    Workloads created by an operator carry a controller owner reference and are
-                    skipped by the scaler (see IncludeOwnedWorkloads), because the operator would
-                    simply reconcile their replica count back. Turning the operator's own custom
-                    resource off is the supported way to stop them.
+                    A workload an operator created carries a controller owner reference, so the
+                    scaler skips it (see IncludeOwnedWorkloads). The operator would reconcile its
+                    replica count straight back. Turning the operator's own custom resource off is
+                    the supported way to stop them.
                   properties:
                     delete:
                       description: |-
                         Delete removes matching resources on downscale instead of patching them,
                         relying on the owning operator to recreate them on upscale. This exists
-                        for operators that offer no off switch, such as Strimzi, where the
-                        documented way to stop a Kafka cluster is to pause reconciliation and
-                        delete the StrimziPodSet resources.
+                        for operators that offer no off switch. Strimzi is one: to stop a Kafka
+                        cluster, the documented way is to pause reconciliation, then delete the
+                        StrimziPodSet resources.
 
                         Nothing is restored on upscale: recreating the resource is the operator's
                         job once it resumes reconciling. Entries are processed in declaration
@@ -186,19 +206,18 @@ spec:
                       items:
                         description: |-
                           FieldPatch sets a single field on a custom resource during downscale.
-                          The field's previous value is captured so upscale can restore it exactly,
-                          which matters for replica counts whose desired value lives in Git rather
-                          than in the schedule.
+                          The previous value is captured, so upscale restores it exactly. This matters
+                          for a replica count whose desired value lives in Git, not in the schedule.
                         properties:
                           path:
                             description: |-
                               Path is an RFC 6901 JSON Pointer to the field, for example
-                              "/spec/replicas" or "/metadata/annotations/cnpg.io~1hibernation"
-                              ("~1" escapes a literal "/" inside a segment, "~0" a literal "~").
+                              "/spec/replicas" or "/metadata/annotations/cnpg.io~1hibernation".
+                              Inside a segment, "~1" escapes a literal "/" and "~0" a literal "~".
 
-                              A "*" segment matches every element of an array or every key of an
-                              object, so "/spec/nodeSets/*/count" targets every node set without
-                              depending on their order.
+                              A "*" segment matches every element of an array, or every key of an
+                              object. "/spec/nodeSets/*/count" therefore targets every node set,
+                              whatever their order.
                             minLength: 2
                             pattern: ^/.*$
                             type: string
@@ -317,14 +336,14 @@ spec:
                   another controller (they carry a controller owner reference, e.g. a
                   StatefulSet created by a database operator from its own CRD).
 
-                  By default these are skipped: the owning controller reconciles the replica
-                  count back from its custom resource, so lightsout would scale the workload
-                  to zero only to have it restored, while its own annotations make subsequent
-                  reconciles treat it as already scaled down.
+                  By default these are skipped. The owning controller reconciles the replica
+                  count back from its custom resource, so LightsOut would scale the workload
+                  to zero only to have it restored. Worse, its own annotations then make the
+                  next reconcile treat the workload as already scaled down.
 
-                  Set this to true only when the owning controller has been paused by other
-                  means (for example an operator-specific pause or suspend annotation), so
-                  nothing will fight the scaling.
+                  Set this to true only when the owning controller is already paused by other
+                  means, such as an operator-specific pause or suspend annotation. Nothing
+                  then fights the scaling.
                 type: boolean
               suspend:
                 default: false
@@ -500,6 +519,23 @@ spec:
                   this schedule reports Down. A non-zero value means the namespace did not
                   release the compute it was scaled down to release.
                 type: integer
+              waveProgress:
+                description: |-
+                  WaveProgress shows which ArgoCD sync wave scaling has reached.
+                  Only present when spec.argoCD.syncWaves is set.
+                properties:
+                  since:
+                    description: Since is when the wait for this wave began.
+                    format: date-time
+                    type: string
+                  wave:
+                    description: Wave is the sync wave whose workloads must settle
+                      before the next wave is scaled.
+                    type: integer
+                required:
+                - since
+                - wave
+                type: object
               workloadStats:
                 description: WorkloadStats contains statistics about managed workloads
                 properties:

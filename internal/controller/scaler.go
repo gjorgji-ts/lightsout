@@ -36,6 +36,9 @@ import (
 const (
 	skipReasonDifferentSchedule = "managed by different schedule"
 	skipReasonNotManaged        = "not managed by lightsout"
+	// skipReasonUserParked marks a workload a user left at zero replicas. LightsOut
+	// never claims one, so nothing waits for it either.
+	skipReasonUserParked = "already at 0 replicas"
 )
 
 // ScaleResult contains the result of a scaling operation
@@ -78,18 +81,19 @@ func scaleDeploymentDown(ctx context.Context, c client.Client, deploy *appsv1.De
 		return &ScaleResult{Skipped: true, SkipReason: "already scaled down"}, nil
 	}
 
-	// Get current replica count. If Spec.Replicas is nil, Kubernetes defaults to 1.
-	// We mirror this behavior to correctly capture the effective replica count.
-	// If replicas is explicitly 0 (no annotation), this is user-managed (e.g., maintenance mode)
-	// and we skip it to preserve user intent - we don't want to claim ownership of workloads
-	// the user has intentionally scaled down.
+	// Get the current replica count. A nil Spec.Replicas defaults to 1 in Kubernetes,
+	// and this mirrors that, to capture the effective count.
+	//
+	// Replicas explicitly at 0 with no annotation is user-managed, such as a
+	// maintenance mode. Skip it: a workload the user parked at zero is not ours
+	// to claim.
 	currentReplicas := int32(1)
 	if deploy.Spec.Replicas != nil {
 		currentReplicas = *deploy.Spec.Replicas
 	}
 	if currentReplicas == 0 {
 		logger.V(1).Info("skipping deployment: already at 0 replicas (user-managed)")
-		return &ScaleResult{Skipped: true, SkipReason: "already at 0 replicas"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonUserParked}, nil
 	}
 
 	// Disable HPA scale-up before zeroing replicas to prevent HPA fight-back.
@@ -124,9 +128,10 @@ func scaleDeploymentDown(ctx context.Context, c client.Client, deploy *appsv1.De
 
 func scaleDeploymentUp(ctx context.Context, c client.Client, deploy *appsv1.Deployment, scheduleName, managedBy, originalReplicas string, hpaList *unstructured.UnstructuredList, logger logr.Logger) (*ScaleResult, error) {
 	// Skip if no original-replicas annotation (not managed by us).
-	// Still attempt HPA restore: if the controller crashed after the workload update but before
-	// RestoreHPA ran, the HPA is stuck with scaleUp disabled and dangling annotations. RestoreHPA
-	// is a no-op when the HPA has no managed-by annotation (genuine skip case).
+	// Still attempt the HPA restore. A controller that crashed after the workload
+	// update but before RestoreHPA ran leaves the HPA with scaleUp disabled and
+	// dangling annotations. RestoreHPA is a no-op on an HPA with no managed-by
+	// annotation, which is the genuine skip case.
 	if originalReplicas == "" {
 		if hpaErr := RestoreHPA(ctx, c, hpaList, deploy.Namespace, "Deployment", deploy.Name, scheduleName); hpaErr != nil {
 			logger.Error(hpaErr, "failed to restore HPA during skip check, continuing")
@@ -205,18 +210,19 @@ func scaleStatefulSetDown(ctx context.Context, c client.Client, sts *appsv1.Stat
 		return &ScaleResult{Skipped: true, SkipReason: "already scaled down"}, nil
 	}
 
-	// Get current replica count. If Spec.Replicas is nil, Kubernetes defaults to 1.
-	// We mirror this behavior to correctly capture the effective replica count.
-	// If replicas is explicitly 0 (no annotation), this is user-managed (e.g., maintenance mode)
-	// and we skip it to preserve user intent - we don't want to claim ownership of workloads
-	// the user has intentionally scaled down.
+	// Get the current replica count. A nil Spec.Replicas defaults to 1 in Kubernetes,
+	// and this mirrors that, to capture the effective count.
+	//
+	// Replicas explicitly at 0 with no annotation is user-managed, such as a
+	// maintenance mode. Skip it: a workload the user parked at zero is not ours
+	// to claim.
 	currentReplicas := int32(1)
 	if sts.Spec.Replicas != nil {
 		currentReplicas = *sts.Spec.Replicas
 	}
 	if currentReplicas == 0 {
 		logger.V(1).Info("skipping statefulset: already at 0 replicas (user-managed)")
-		return &ScaleResult{Skipped: true, SkipReason: "already at 0 replicas"}, nil
+		return &ScaleResult{Skipped: true, SkipReason: skipReasonUserParked}, nil
 	}
 
 	// Disable HPA scale-up before zeroing replicas to prevent HPA fight-back.
@@ -246,9 +252,10 @@ func scaleStatefulSetDown(ctx context.Context, c client.Client, sts *appsv1.Stat
 
 func scaleStatefulSetUp(ctx context.Context, c client.Client, sts *appsv1.StatefulSet, scheduleName, managedBy, originalReplicas string, hpaList *unstructured.UnstructuredList, logger logr.Logger) (*ScaleResult, error) {
 	// Skip if no original-replicas annotation (not managed by us).
-	// Still attempt HPA restore: if the controller crashed after the workload update but before
-	// RestoreHPA ran, the HPA is stuck with scaleUp disabled and dangling annotations. RestoreHPA
-	// is a no-op when the HPA has no managed-by annotation (genuine skip case).
+	// Still attempt the HPA restore. A controller that crashed after the workload
+	// update but before RestoreHPA ran leaves the HPA with scaleUp disabled and
+	// dangling annotations. RestoreHPA is a no-op on an HPA with no managed-by
+	// annotation, which is the genuine skip case.
 	if originalReplicas == "" {
 		if hpaErr := RestoreHPA(ctx, c, hpaList, sts.Namespace, "StatefulSet", sts.Name, scheduleName); hpaErr != nil {
 			logger.Error(hpaErr, "failed to restore HPA during skip check, continuing")

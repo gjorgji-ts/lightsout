@@ -24,6 +24,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -83,12 +84,27 @@ func WorkloadFromCronJob(c *batchv1.CronJob) Workload {
 
 // scaleWorkloadsResult contains the result of scaling all workloads
 type scaleWorkloadsResult struct {
-	stats             lightsoutv1alpha1.WorkloadStats
-	totalProcessed    int
-	totalFailed       int
-	totalSkipped      int
-	totalWorkloads    int // full collection size, set only when batchLimitReached is true
+	stats          lightsoutv1alpha1.WorkloadStats
+	totalProcessed int
+	totalFailed    int
+	totalSkipped   int
+	// totalWorkloads is the full collection size, set only when the pass returned early
+	// (batchLimitReached or waveGateReached).
+	totalWorkloads    int
 	batchLimitReached bool
+	// waveGateReached is true when the pass stopped at a sync wave boundary because the
+	// wave just scaled has not settled yet. More waves remain.
+	waveGateReached bool
+	// waveProgress is how far wave-ordered scaling got, for the caller to persist in
+	// status. Nil when sync waves are off or no wave boundary was reached.
+	waveProgress *lightsoutv1alpha1.WaveProgress
+}
+
+// stoppedEarly reports whether the pass returned before visiting every workload. Either
+// the rate limit budget ran out, or a sync wave has not settled yet.
+// Workloads behind either limit are still in their old state.
+func (r *scaleWorkloadsResult) stoppedEarly() bool {
+	return r.batchLimitReached || r.waveGateReached
 }
 
 // scaleWorkloadsConfig carries per-reconciler parameters into the shared scaleWorkloads function.
@@ -110,6 +126,13 @@ type scaleWorkloadsConfig struct {
 	// TransferOwnership, when true, re-stamps workloads that carry a foreign managed-by
 	// label so the caller's schedule takes precedence (used by namespace schedules).
 	TransferOwnership bool
+	// ScheduleObj is the schedule resource sync wave events are recorded against.
+	ScheduleObj runtime.Object
+	// WaveProgress is how far wave-ordered scaling got on the previous reconcile in this
+	// same direction. Nil on the first pass of a transition.
+	WaveProgress *lightsoutv1alpha1.WaveProgress
+	// Now is the time sync wave timeouts are measured against. Zero means time.Now().
+	Now time.Time
 }
 
 // hasControllerOwner reports whether the object is controlled by another controller.
@@ -150,10 +173,10 @@ func countManagedWorkloads(workloads []Workload) lightsoutv1alpha1.WorkloadStats
 // scaled-down state under lightsout's control, based on the annotations left on the
 // object by the scaler.
 //
-// This is deliberately read from the object rather than from the ScaleResult: a
-// workload skipped as "already scaled down" is still down, while one skipped because
-// a user parked it at zero replicas, or because another schedule owns it, is not ours
-// to count. It also stays correct across requeues in a batched run.
+// This reads the object rather than the ScaleResult, deliberately. A workload
+// skipped as "already scaled down" is still down. One skipped because a user parked
+// it at zero replicas, or because another schedule owns it, is not ours to count.
+// Reading the object also stays correct across requeues in a batched run.
 func isScaledDownByLightsOut(w Workload) bool {
 	switch w.Type {
 	case WorkloadTypeDeployment:
@@ -347,9 +370,14 @@ func collectNamespaceCronJobs(ctx context.Context, c client.Client, ns string, c
 // early with batchLimitReached=true so the caller can requeue and yield control back to
 // the controller framework.
 //
-// Skipped workloads (already at target state) do not consume budget, making re-entry
-// after requeue cheap - the reconciler naturally picks up where it left off via
-// annotation-based idempotency.
+// A skipped workload, one already at the target state, consumes no budget. Re-entry
+// after a requeue is therefore cheap, and the annotations make the reconciler pick up
+// where it left off.
+//
+// With sync waves enabled the same early return serves the wave boundaries. Workloads
+// are processed in wave order, and the pass stops at the first boundary whose preceding
+// wave has not settled, returning waveGateReached=true. Both limits yield to a requeue, and
+// which one trips first does not matter, because every pass is idempotent.
 func scaleWorkloads(
 	ctx context.Context,
 	c client.Client,
@@ -364,9 +392,10 @@ func scaleWorkloads(
 		return nil, err
 	}
 
-	// Pre-fetch HPA lists once per namespace so every ScaleDeployment/ScaleStatefulSet call in
-	// the loop below reuses the same in-memory snapshot instead of issuing a separate List call
-	// per workload (O(1) API calls per namespace instead of O(workloads)).
+	// Pre-fetch the HPA lists once per namespace. Every ScaleDeployment and
+	// ScaleStatefulSet call in the loop below then reuses one in-memory snapshot,
+	// rather than issuing a List per workload. That is O(1) API calls per
+	// namespace instead of O(workloads).
 	hpaLists := make(map[string]*unstructured.UnstructuredList, len(cfg.Namespaces))
 	for _, ns := range cfg.Namespaces {
 		list, hpaErr := listHPAs(ctx, c, ns)
@@ -387,6 +416,27 @@ func scaleWorkloads(
 	direction := "down"
 	if cfg.ScaleUp {
 		direction = "up"
+	}
+
+	// Sync wave state. gateWave is the wave currently being processed, and gateMembers
+	// are the workloads of it the next boundary waits for.
+	wavesEnabled, waveTimeout := syncWaveSettings(core)
+	waveNow := cfg.Now
+	if waveNow.IsZero() {
+		waveNow = time.Now()
+	}
+	var waveProgress *lightsoutv1alpha1.WaveProgress
+	gateWave := 0
+	var gateMembers []Workload
+	if wavesEnabled {
+		// The previous wait is carried only while waves are on. Turn the field off and
+		// the last wave reached would be rewritten into status forever, reporting a
+		// wait that nothing waits for.
+		waveProgress = cfg.WaveProgress
+		sortWorkloadsByWave(workloads, cfg.ScaleUp)
+		if len(workloads) > 0 {
+			gateWave = syncWave(workloads[0])
+		}
 	}
 
 	var totalProcessed, totalFailed, totalSkipped int
@@ -412,6 +462,33 @@ func scaleWorkloads(
 		default:
 		}
 
+		// Wave boundary: everything up to here belongs to gateWave, and the wave after it
+		// must not start until gateWave has settled.
+		if wavesEnabled {
+			if wave := syncWave(w); wave != gateWave {
+				var hold bool
+				waveProgress, hold = waveGate(ctx, recorder, cfg.ScheduleObj, waveProgress,
+					gateWave, gateMembers, cfg.ScaleUp, waveTimeout, waveNow)
+				if hold {
+					ScalingDurationSeconds.WithLabelValues(cfg.ScheduleLabel, direction).Observe(time.Since(startTime).Seconds())
+					if totalProcessed > 0 {
+						ScalingBatchesTotal.WithLabelValues(cfg.ScheduleLabel, direction).Inc()
+					}
+					return &scaleWorkloadsResult{
+						stats:           stats,
+						totalProcessed:  totalProcessed,
+						totalFailed:     totalFailed,
+						totalSkipped:    totalSkipped,
+						totalWorkloads:  len(workloads),
+						waveGateReached: true,
+						waveProgress:    waveProgress,
+					}, nil
+				}
+				gateWave = wave
+				gateMembers = gateMembers[:0]
+			}
+		}
+
 		var scaleResult *ScaleResult
 		var scaleErr error
 
@@ -432,9 +509,16 @@ func scaleWorkloads(
 			continue
 		}
 
-		// Record the resulting state before branching on Skipped: a workload skipped as
-		// "already scaled down" is still down and must be counted, while one skipped
-		// because a user parked it at zero or another schedule owns it must not be.
+		// A workload that was scaled, or that is already in the target state under this
+		// schedule, is what the next wave boundary waits for. One that failed is not: it
+		// was never asked to move.
+		if wavesEnabled && waveGates(w, scaleResult) {
+			gateMembers = append(gateMembers, w)
+		}
+
+		// Record the resulting state before branching on Skipped. A workload skipped
+		// as "already scaled down" is still down and must be counted. One skipped
+		// because a user parked it at zero, or another schedule owns it, must not be.
 		if isScaledDownByLightsOut(w) {
 			recordScaledWorkload(&stats, w)
 		}
@@ -470,6 +554,7 @@ func scaleWorkloads(
 						totalSkipped:      totalSkipped,
 						totalWorkloads:    len(workloads),
 						batchLimitReached: true,
+						waveProgress:      waveProgress,
 					}, nil
 				}
 			}
@@ -482,10 +567,14 @@ func scaleWorkloads(
 		ScalingBatchesTotal.WithLabelValues(cfg.ScheduleLabel, direction).Inc()
 	}
 
+	// waveProgress is carried out of a completed pass too. It records which waves scaling
+	// has already moved past, so the next reconcile in this direction does not wait on
+	// them again.
 	return &scaleWorkloadsResult{
 		stats:          stats,
 		totalProcessed: totalProcessed,
 		totalFailed:    totalFailed,
 		totalSkipped:   totalSkipped,
+		waveProgress:   waveProgress,
 	}, nil
 }
