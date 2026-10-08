@@ -1,0 +1,128 @@
+# lava-lamp-analytics - managed by analytics-offhours (namespace-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: groove-pipeline
+  namespace: lava-lamp-analytics
+  labels:
+    app: groove-pipeline
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: groove-pipeline
+  template:
+    metadata:
+      labels:
+        app: groove-pipeline
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bubble-sorter
+  namespace: lava-lamp-analytics
+  labels:
+    app: bubble-sorter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bubble-sorter
+  template:
+    metadata:
+      labels:
+        app: bubble-sorter
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: wax-store
+  namespace: lava-lamp-analytics
+  labels:
+    app: wax-store
+spec:
+  serviceName: wax-store
+  replicas: 3
+  selector:
+    matchLabels:
+      app: wax-store
+  template:
+    metadata:
+      labels:
+        app: wax-store
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lamp-lighter
+  namespace: lava-lamp-analytics
+  labels:
+    app: lamp-lighter
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: work
+              image: busybox:latest
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 16Mi
+          restartPolicy: OnFailure
+---
+# A second operator, a second kind, a different off switch: the
+# analytics-offhours schedule sets spec.replicas to 0 and the operator removes
+# the broker pod.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: bubble-bus
+  namespace: lava-lamp-analytics
+spec:
+  replicas: 1
+  persistence:
+    storage: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 256Mi

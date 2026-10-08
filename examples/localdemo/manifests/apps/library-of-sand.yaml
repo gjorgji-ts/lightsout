@@ -1,0 +1,57 @@
+# library-of-sand - managed by search-offhours (namespace-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: query-parser
+  namespace: library-of-sand
+  labels:
+    app: query-parser
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: query-parser
+  template:
+    metadata:
+      labels:
+        app: query-parser
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: index-shard
+  namespace: library-of-sand
+  labels:
+    app: index-shard
+spec:
+  serviceName: index-shard
+  replicas: 2
+  selector:
+    matchLabels:
+      app: index-shard
+  template:
+    metadata:
+      labels:
+        app: index-shard
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

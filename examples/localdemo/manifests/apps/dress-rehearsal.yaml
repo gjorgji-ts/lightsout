@@ -1,0 +1,28 @@
+# dress-rehearsal - managed by staging-offhours (cluster-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: curtain-raiser
+  namespace: dress-rehearsal
+  labels:
+    app: curtain-raiser
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: curtain-raiser
+  template:
+    metadata:
+      labels:
+        app: curtain-raiser
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

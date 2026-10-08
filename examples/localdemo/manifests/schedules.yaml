@@ -1,12 +1,207 @@
+# The demo runs four schedules at once, on different cycles, so the dashboard
+# shows a fleet and not a single row.
+#
+# platform-offhours and batch-offhours run half a cycle apart. One of them is
+# always down.
+---
+# A cluster-scoped schedule across four namespaces. One of them holds an
+# operator-managed database. One workload stays out of scope by label.
 apiVersion: lightsout.techsupport.mk/v1alpha1
 kind: LightsOutSchedule
 metadata:
-  name: demo-schedule
+  name: platform-offhours
 spec:
   upscale: "*/6 * * * *"
   downscale: "3-59/6 * * * *"
   timezone: "UTC"
   namespaces:
-    - team-frontend
-    - team-backend
-    - team-platform
+    - neon-arcade
+    - midnight-diner
+    - jellyfish-cdn
+    - moonshot-labs
+    - hammock-district
+  # The arcade sign stays lit all night.
+  excludeLabels:
+    matchLabels:
+      lights: always-on
+  # Hibernate the CloudNativePG cluster in moonshot-labs. It goes off before the
+  # workloads scale down. It comes back before they scale up.
+  customResources:
+    - group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      setFields:
+        - path: /metadata/annotations/cnpg.io~1hibernation
+          value: "on"
+  # The default is 10m, which outlasts the demo cycle. Two minutes is enough for
+  # one Postgres instance to come back on a local cluster.
+  customResourceWarmupTimeout: 2m
+  # Rate limits, so the batch and duration panels have data to show.
+  upscaleRateLimit:
+    batchSize: 3
+    delayBetweenBatches: 5s
+  downscaleRateLimit:
+    batchSize: 5
+    delayBetweenBatches: 2s
+---
+# The same idea, half a cycle apart.
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: batch-offhours
+spec:
+  upscale: "3-59/6 * * * *"
+  downscale: "*/6 * * * *"
+  timezone: "UTC"
+  namespaces:
+    - sleepy-hollow
+    - popcorn-ci
+---
+# A namespace-scoped schedule, owned by the team that owns the namespace. It
+# stops a message broker through a replica count.
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: analytics-offhours
+  namespace: lava-lamp-analytics
+spec:
+  upscale: "*/10 * * * *"
+  downscale: "5-59/10 * * * *"
+  timezone: "UTC"
+  customResources:
+    - group: rabbitmq.com
+      version: v1beta1
+      kind: RabbitmqCluster
+      setFields:
+        - path: /spec/replicas
+          value: 0
+  customResourceWarmupTimeout: 2m
+---
+# A fast cycle, so the state timeline fills in while you watch.
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: devtools-offhours
+  namespace: yak-shavers
+spec:
+  upscale: "*/4 * * * *"
+  downscale: "2-59/4 * * * *"
+  timezone: "UTC"
+---
+# Two cluster-scoped schedules over two namespaces each. The reporting pair
+# holds a second database, so a cluster-scoped schedule drives a custom resource
+# as well.
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: reporting-offhours
+spec:
+  upscale: "*/20 * * * *"
+  downscale: "10-59/20 * * * *"
+  timezone: "UTC"
+  namespaces:
+    - ledger-lighthouse
+    - abacus-annex
+  customResources:
+    - group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      setFields:
+        - path: /metadata/annotations/cnpg.io~1hibernation
+          value: "on"
+  customResourceWarmupTimeout: 2m
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutSchedule
+metadata:
+  name: staging-offhours
+spec:
+  upscale: "*/5 * * * *"
+  downscale: "3-59/5 * * * *"
+  timezone: "UTC"
+  namespaces:
+    - dress-rehearsal
+    - understudy-stage
+---
+# Eight namespace-scoped schedules, each owned by the team that owns the
+# namespace. The cycles differ on purpose, so the state timeline shows a fleet
+# that is never all up or all down.
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: api-offhours
+  namespace: taco-truck-api
+spec:
+  upscale: "*/5 * * * *"
+  downscale: "2-59/5 * * * *"
+  timezone: "UTC"
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: web-offhours
+  namespace: pixel-forge
+spec:
+  upscale: "1-59/6 * * * *"
+  downscale: "4-59/6 * * * *"
+  timezone: "UTC"
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: ml-offhours
+  namespace: robot-petting-zoo
+spec:
+  upscale: "*/12 * * * *"
+  downscale: "6-59/12 * * * *"
+  timezone: "UTC"
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: search-offhours
+  namespace: library-of-sand
+spec:
+  upscale: "*/7 * * * *"
+  downscale: "3-59/7 * * * *"
+  timezone: "UTC"
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: cache-offhours
+  namespace: goldfish-memory
+spec:
+  upscale: "*/3 * * * *"
+  downscale: "1-59/3 * * * *"
+  timezone: "UTC"
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: queue-offhours
+  namespace: conveyor-belt
+spec:
+  upscale: "2-59/6 * * * *"
+  downscale: "5-59/6 * * * *"
+  timezone: "UTC"
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: media-offhours
+  namespace: cinema-paradiso
+spec:
+  upscale: "*/9 * * * *"
+  downscale: "4-59/9 * * * *"
+  timezone: "UTC"
+---
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: iot-offhours
+  namespace: greenhouse-grid
+spec:
+  upscale: "*/15 * * * *"
+  downscale: "7-59/15 * * * *"
+  timezone: "UTC"

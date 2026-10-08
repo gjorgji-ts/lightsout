@@ -1,0 +1,15 @@
+# Namespace-scoped adoption.
+#
+# The cluster-scoped platform-offhours schedule manages hammock-district at
+# first. Apply this file and the namespace leaves that schedule. Its own
+# schedule takes over, on its own cycle. platform-offhours releases the
+# namespace and stops counting its workloads.
+apiVersion: lightsout.techsupport.mk/v1alpha1
+kind: LightsOutNamespaceSchedule
+metadata:
+  name: sandbox-offhours
+  namespace: hammock-district
+spec:
+  upscale: "*/8 * * * *"
+  downscale: "4-59/8 * * * *"
+  timezone: "UTC"

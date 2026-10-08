@@ -1,0 +1,82 @@
+# robot-petting-zoo - managed by ml-offhours (namespace-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-gate
+  namespace: robot-petting-zoo
+  labels:
+    app: inference-gate
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: inference-gate
+  template:
+    metadata:
+      labels:
+        app: inference-gate
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-trainer
+  namespace: robot-petting-zoo
+  labels:
+    app: model-trainer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: model-trainer
+  template:
+    metadata:
+      labels:
+        app: model-trainer
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-retrain
+  namespace: robot-petting-zoo
+  labels:
+    app: nightly-retrain
+spec:
+  schedule: "*/15 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: work
+              image: busybox:latest
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 16Mi
+          restartPolicy: OnFailure

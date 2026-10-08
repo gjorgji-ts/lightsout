@@ -313,3 +313,5 @@ dashboard built on `rate()` or `increase()` reads zero for a schedule that runs 
 day. Read them with `max_over_time` instead. The gauges carry the current answer and are
 written on every reconcile, so they report without waiting for a transition. A deleted
 schedule's series are dropped when its finalizer runs.
+
+The dashboards in [examples/grafana](../examples/grafana) are built on these metrics.

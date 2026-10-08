@@ -1,0 +1,82 @@
+# taco-truck-api - managed by api-offhours (namespace-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-taker
+  namespace: taco-truck-api
+  labels:
+    app: order-taker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: order-taker
+  template:
+    metadata:
+      labels:
+        app: order-taker
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: salsa-mixer
+  namespace: taco-truck-api
+  labels:
+    app: salsa-mixer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: salsa-mixer
+  template:
+    metadata:
+      labels:
+        app: salsa-mixer
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: receipt-printer
+  namespace: taco-truck-api
+  labels:
+    app: receipt-printer
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: work
+              image: busybox:latest
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 16Mi
+          restartPolicy: OnFailure

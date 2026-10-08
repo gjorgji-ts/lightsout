@@ -1,0 +1,57 @@
+# pixel-forge - managed by web-offhours (namespace-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sprite-renderer
+  namespace: pixel-forge
+  labels:
+    app: sprite-renderer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sprite-renderer
+  template:
+    metadata:
+      labels:
+        app: sprite-renderer
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: asset-vault
+  namespace: pixel-forge
+  labels:
+    app: asset-vault
+spec:
+  serviceName: asset-vault
+  replicas: 2
+  selector:
+    matchLabels:
+      app: asset-vault
+  template:
+    metadata:
+      labels:
+        app: asset-vault
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
