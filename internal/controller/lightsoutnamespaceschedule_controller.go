@@ -460,6 +460,9 @@ func (r *LightsOutNamespaceScheduleReconciler) handleDeletion(ctx context.Contex
 			"All managed workloads restored to original state")
 	}
 
+	// The schedule is going away, so its series must go with it.
+	clearScheduleMetrics(schedule.Namespace + "/" + schedule.Name)
+
 	// Remove finalizer to allow deletion
 	controllerutil.RemoveFinalizer(schedule, constants.FinalizerName)
 	return ctrl.Result{}, r.Update(ctx, schedule)

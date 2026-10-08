@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -937,5 +938,47 @@ func TestManagedCustomResourcesGauge_DeleteEntry(t *testing.T) {
 	// manages while it is down.
 	if got := testutil.CollectAndCount(ManagedCustomResources); got != 1 {
 		t.Errorf("series count = %d, want 1", got)
+	}
+}
+
+// TestClearScheduleMetrics covers the series a deleted schedule would otherwise keep
+// publishing for the lifetime of the operator pod.
+func TestClearScheduleMetrics(t *testing.T) {
+	// The registry is global, so start from a known state rather than from whatever
+	// the tests before this one left behind.
+	reset := func() {
+		ScheduleState.Reset()
+		ManagedWorkloads.Reset()
+		ScaledWorkloads.Reset()
+		ManagedCustomResources.Reset()
+		StuckTerminatingPods.Reset()
+	}
+	reset()
+	t.Cleanup(reset)
+
+	ScheduleState.WithLabelValues("doomed").Set(1)
+	ScheduleState.WithLabelValues("survivor").Set(1)
+	ManagedWorkloads.WithLabelValues("doomed", "deployment").Set(4)
+	ScaledWorkloads.WithLabelValues("doomed", "deployment").Set(4)
+	ManagedCustomResources.WithLabelValues("doomed", "Cluster").Set(2)
+	StuckTerminatingPods.WithLabelValues("doomed", "apps").Set(1)
+
+	clearScheduleMetrics("doomed")
+
+	if got := testutil.CollectAndCount(ScheduleState); got != 1 {
+		t.Errorf("ScheduleState series = %d, want 1 (only the survivor)", got)
+	}
+	if got := testutil.ToFloat64(ScheduleState.WithLabelValues("survivor")); got != 1 {
+		t.Errorf("survivor = %v, want 1", got)
+	}
+	for name, vec := range map[string]*prometheus.GaugeVec{
+		"ManagedWorkloads":       ManagedWorkloads,
+		"ScaledWorkloads":        ScaledWorkloads,
+		"ManagedCustomResources": ManagedCustomResources,
+		"StuckTerminatingPods":   StuckTerminatingPods,
+	} {
+		if got := testutil.CollectAndCount(vec); got != 0 {
+			t.Errorf("%s series = %d after clear, want 0", name, got)
+		}
 	}
 }

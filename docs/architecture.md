@@ -311,4 +311,5 @@ The `workload_type` label holds the kind. For a custom resource turned off throu
 The counters only move at a transition, and they restart with the operator pod, so a
 dashboard built on `rate()` or `increase()` reads zero for a schedule that runs twice a
 day. Read them with `max_over_time` instead. The gauges carry the current answer and are
-written on every reconcile, so they report without waiting for a transition.
+written on every reconcile, so they report without waiting for a transition. A deleted
+schedule's series are dropped when its finalizer runs.

@@ -157,6 +157,29 @@ var (
 	)
 )
 
+// clearScheduleMetrics drops every series a schedule published.
+//
+// A Prometheus child lives until something deletes it. A deleted schedule would
+// otherwise keep reporting its last state for as long as the operator pod runs. On a
+// cluster where schedules come and go, those ghosts accumulate in the registry and in
+// every dashboard that lists schedules.
+func clearScheduleMetrics(scheduleLabel string) {
+	match := prometheus.Labels{labelSchedule: scheduleLabel}
+
+	ScheduleState.DeletePartialMatch(match)
+	NextTransitionSeconds.DeletePartialMatch(match)
+	ScalingOperationsTotal.DeletePartialMatch(match)
+	ScalingErrorsTotal.DeletePartialMatch(match)
+	ManagedWorkloads.DeletePartialMatch(match)
+	ScaledWorkloads.DeletePartialMatch(match)
+	ManagedCustomResources.DeletePartialMatch(match)
+	ScalingBatchesTotal.DeletePartialMatch(match)
+	ScalingWorkloadsProcessed.DeletePartialMatch(match)
+	ScalingDurationSeconds.DeletePartialMatch(match)
+	StuckTerminatingPods.DeletePartialMatch(match)
+	LastReconcileTime.DeletePartialMatch(match)
+}
+
 func init() {
 	metrics.Registry.MustRegister(
 		ScheduleState,
