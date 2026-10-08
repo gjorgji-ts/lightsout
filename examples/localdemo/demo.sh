@@ -6,7 +6,13 @@ CLUSTER_NAME="lightsout-demo"
 CERT_MANAGER_VERSION="v1.19.1"
 CNPG_VERSION="1.30.0"
 RABBITMQ_OPERATOR_VERSION="v2.23.0"
-LIGHTSOUT_VERSION="0.20.0"
+# The demo tracks the newest release rather than a pinned version, so it cannot drift
+# behind the dashboards. The image has a "latest" tag. The chart has no equivalent:
+# helm reads --version as a semver constraint, so omitting it is what takes the newest
+# chart. A locally built image gets its own tag, so a remote run after a local one
+# cannot pick up the source build by mistake.
+LIGHTSOUT_IMAGE_TAG="latest"
+LIGHTSOUT_DEV_TAG="dev"
 SCRIPT_DIR_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DASHBOARD_DIR="$SCRIPT_DIR_ROOT/examples/grafana"
 LIGHTSOUT_CHART_OCI="oci://ghcr.io/gjorgji-ts/charts/lightsout"
@@ -148,10 +154,10 @@ cmd_up() {
     # Resolve chart and image based on source mode
     local helm_args=()
     if [[ "$source" == "remote" ]]; then
-        log "Using chart from OCI registry: $LIGHTSOUT_CHART_OCI (version $LIGHTSOUT_VERSION)"
-        helm_args=("$LIGHTSOUT_CHART_OCI" --version "$LIGHTSOUT_VERSION")
+        log "Using the newest chart from the OCI registry: $LIGHTSOUT_CHART_OCI"
+        helm_args=("$LIGHTSOUT_CHART_OCI")
 
-        local image="ghcr.io/gjorgji-ts/lightsout:${LIGHTSOUT_VERSION}"
+        local image="ghcr.io/gjorgji-ts/lightsout:${LIGHTSOUT_IMAGE_TAG}"
         log "Pulling image directly into Kind node: $image"
         local node="${CLUSTER_NAME}-control-plane"
         local arch
@@ -160,9 +166,9 @@ cmd_up() {
         docker exec "$node" ctr --namespace=k8s.io images pull --platform "$platform" "$image"
     else
         log "Using local chart: $LIGHTSOUT_CHART_LOCAL"
-        helm_args=("$LIGHTSOUT_CHART_LOCAL" --set image.tag=latest)
+        helm_args=("$LIGHTSOUT_CHART_LOCAL" --set "image.tag=${LIGHTSOUT_DEV_TAG}")
 
-        local image="ghcr.io/gjorgji-ts/lightsout:latest"
+        local image="ghcr.io/gjorgji-ts/lightsout:${LIGHTSOUT_DEV_TAG}"
         log "Building image locally: $image"
         make -C "$SCRIPT_DIR_ROOT" docker-build IMG="$image"
         log "Loading image into Kind cluster..."
@@ -290,7 +296,7 @@ case "${1:-help}" in
         echo "  up [--source local|remote]"
         echo "          Create Kind cluster and deploy full demo environment"
         echo "          --source local   Build image and use chart from source"
-        echo "          --source remote  Pull image and chart $LIGHTSOUT_VERSION from ghcr.io (default)"
+        echo "          --source remote  Pull the newest released image and chart from ghcr.io (default)"
         echo "  down    Tear down the Kind cluster"
         echo "  status  Show schedule and workload state"
         echo "  adopt   Hand hammock-district to its own namespace-scoped schedule"
