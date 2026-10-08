@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLUSTER_NAME="lightsout-demo"
-CERT_MANAGER_VERSION="v1.19.1"
-CNPG_VERSION="1.30.0"
+CERT_MANAGER_VERSION="v1.21.2"
+CNPG_VERSION="1.30.1"
 RABBITMQ_OPERATOR_VERSION="v2.23.0"
 # The demo tracks the newest release rather than a pinned version, so it cannot drift
 # behind the dashboards. The image has a "latest" tag. The chart has no equivalent:
