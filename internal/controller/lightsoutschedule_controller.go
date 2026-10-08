@@ -269,6 +269,9 @@ func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	ManagedWorkloads.WithLabelValues(schedule.Name, "deployment").Set(float64(reported.DeploymentsManaged))
 	ManagedWorkloads.WithLabelValues(schedule.Name, "statefulset").Set(float64(reported.StatefulSetsManaged))
 	ManagedWorkloads.WithLabelValues(schedule.Name, "cronjob").Set(float64(reported.CronJobsManaged))
+	ScaledWorkloads.WithLabelValues(schedule.Name, "deployment").Set(float64(reported.DeploymentsScaled))
+	ScaledWorkloads.WithLabelValues(schedule.Name, "statefulset").Set(float64(reported.StatefulSetsScaled))
+	ScaledWorkloads.WithLabelValues(schedule.Name, "cronjob").Set(float64(reported.CronJobsSuspended))
 
 	LastReconcileTime.WithLabelValues(schedule.Name).SetToCurrentTime()
 

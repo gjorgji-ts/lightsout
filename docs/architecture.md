@@ -291,13 +291,24 @@ LightsOut serves Prometheus metrics through the controller-runtime metrics serve
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `lightsout_schedule_state` | Gauge | `schedule` | Current state (1=Up, 0=Down) |
+| `lightsout_schedule_state` | Gauge | `schedule` | Current state (0=Down, 1=Up, 2=Warming up) |
 | `lightsout_next_transition_seconds` | Gauge | `schedule`, `transition_type` | Seconds until the next transition |
 | `lightsout_scaling_operations_total` | Counter | `schedule`, `namespace`, `workload_type`, `operation` | Scaling operations |
 | `lightsout_scaling_errors_total` | Counter | `schedule`, `namespace`, `workload_type` | Scaling errors |
 | `lightsout_managed_workloads` | Gauge | `schedule`, `workload_type` | Managed workloads |
+| `lightsout_scaled_workloads` | Gauge | `schedule`, `workload_type` | Managed workloads currently at zero or suspended |
+| `lightsout_managed_custom_resources` | Gauge | `schedule`, `kind` | Operator-managed custom resources matched |
 | `lightsout_scaling_batches_total` | Counter | `schedule`, `direction` | Batches processed |
 | `lightsout_scaling_workloads_processed_total` | Counter | `schedule`, `direction`, `result` | Workloads processed |
 | `lightsout_scaling_duration_seconds` | Histogram | `schedule`, `direction` | Duration of a scaling operation |
 | `lightsout_stuck_terminating_pods` | Gauge | `schedule`, `namespace` | Pods past their grace period |
 | `lightsout_last_reconcile_timestamp_seconds` | Gauge | `schedule` | Timestamp of the last reconcile |
+
+State 2 is the warming-up window. The schedule is on its way up, but not serving yet: restored custom resources are still coming back, or a sync wave is still settling.
+
+The `workload_type` label holds the kind. For a custom resource turned off through `spec.customResources`, that is the kind itself, such as `Cluster` or `RabbitmqCluster`. That is what separates custom resource operations from the `Deployment`, `StatefulSet` and `CronJob` ones. `lightsout_managed_workloads` counts only the three workload kinds.
+
+The counters only move at a transition, and they restart with the operator pod, so a
+dashboard built on `rate()` or `increase()` reads zero for a schedule that runs twice a
+day. Read them with `max_over_time` instead. The gauges carry the current answer and are
+written on every reconcile, so they report without waiting for a transition.
