@@ -1,17 +1,20 @@
+# understudy-stage - managed by staging-offhours (cluster-scoped)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: web-ui
-  namespace: team-frontend
+  name: stand-in
+  namespace: understudy-stage
+  labels:
+    app: stand-in
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
-      app: web-ui
+      app: stand-in
   template:
     metadata:
       labels:
-        app: web-ui
+        app: stand-in
     spec:
       containers:
         - name: nginx
@@ -25,45 +28,22 @@ spec:
               memory: 32Mi
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
-  name: landing-page
-  namespace: team-frontend
+  name: prompt-book
+  namespace: understudy-stage
+  labels:
+    app: prompt-book
 spec:
+  serviceName: prompt-book
   replicas: 2
   selector:
     matchLabels:
-      app: landing-page
+      app: prompt-book
   template:
     metadata:
       labels:
-        app: landing-page
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:alpine
-          resources:
-            requests:
-              cpu: 5m
-              memory: 16Mi
-            limits:
-              cpu: 50m
-              memory: 32Mi
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: asset-server
-  namespace: team-frontend
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: asset-server
-  template:
-    metadata:
-      labels:
-        app: asset-server
+        app: prompt-book
     spec:
       containers:
         - name: nginx

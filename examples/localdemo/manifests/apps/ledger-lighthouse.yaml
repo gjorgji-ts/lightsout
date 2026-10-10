@@ -1,0 +1,69 @@
+# ledger-lighthouse - managed by reporting-offhours (cluster-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: report-builder
+  namespace: ledger-lighthouse
+  labels:
+    app: report-builder
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: report-builder
+  template:
+    metadata:
+      labels:
+        app: report-builder
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: month-closer
+  namespace: ledger-lighthouse
+  labels:
+    app: month-closer
+spec:
+  schedule: "*/15 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: work
+              image: busybox:latest
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 16Mi
+          restartPolicy: OnFailure
+---
+# A second database, under a cluster-scoped schedule this time.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: ledger-db
+  namespace: ledger-lighthouse
+spec:
+  instances: 1
+  storage:
+    size: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi

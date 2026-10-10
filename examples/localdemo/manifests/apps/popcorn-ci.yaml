@@ -1,0 +1,82 @@
+# popcorn-ci - managed by batch-offhours (cluster-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: butter-pump
+  namespace: popcorn-ci
+  labels:
+    app: butter-pump
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: butter-pump
+  template:
+    metadata:
+      labels:
+        app: butter-pump
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: projector-lamp
+  namespace: popcorn-ci
+  labels:
+    app: projector-lamp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: projector-lamp
+  template:
+    metadata:
+      labels:
+        app: projector-lamp
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: reel-changer
+  namespace: popcorn-ci
+  labels:
+    app: reel-changer
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: work
+              image: busybox:latest
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 16Mi
+          restartPolicy: OnFailure

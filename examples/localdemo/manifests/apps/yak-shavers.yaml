@@ -1,0 +1,85 @@
+# yak-shavers - managed by devtools-offhours (namespace-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bikeshed-painter
+  namespace: yak-shavers
+  labels:
+    app: bikeshed-painter
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: bikeshed-painter
+  template:
+    metadata:
+      labels:
+        app: bikeshed-painter
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rubber-duck-debugger
+  namespace: yak-shavers
+  labels:
+    app: rubber-duck-debugger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rubber-duck-debugger
+  template:
+    metadata:
+      labels:
+        app: rubber-duck-debugger
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shave-log
+  namespace: yak-shavers
+  labels:
+    app: shave-log
+spec:
+  serviceName: shave-log
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shave-log
+  template:
+    metadata:
+      labels:
+        app: shave-log
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

@@ -15,6 +15,10 @@ prometheus:
     podMonitorSelectorNilUsesHelmValues: false
     additionalScrapeConfigs:
       - job_name: "kubernetes-pods"
+        # Without this, the namespace label below overwrites the namespace label
+        # LightsOut puts on its own metrics, and Prometheus renames the original
+        # to exported_namespace. Every per-namespace panel then reads empty.
+        honor_labels: true
         kubernetes_sd_configs:
           - role: pod
         relabel_configs:

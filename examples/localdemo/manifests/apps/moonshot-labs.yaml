@@ -1,0 +1,102 @@
+# moonshot-labs - managed by platform-offhours (cluster-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mission-control
+  namespace: moonshot-labs
+  labels:
+    app: mission-control
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mission-control
+  template:
+    metadata:
+      labels:
+        app: mission-control
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wind-tunnel
+  namespace: moonshot-labs
+  labels:
+    app: wind-tunnel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wind-tunnel
+  template:
+    metadata:
+      labels:
+        app: wind-tunnel
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: telemetry-vault
+  namespace: moonshot-labs
+  labels:
+    app: telemetry-vault
+spec:
+  serviceName: telemetry-vault
+  replicas: 2
+  selector:
+    matchLabels:
+      app: telemetry-vault
+  template:
+    metadata:
+      labels:
+        app: telemetry-vault
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+# CloudNativePG owns these Postgres pods, so the scaler skips them. The
+# platform-offhours schedule hibernates the Cluster through spec.customResources
+# instead, and holds every other workload at zero until it reports ready again.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: launch-log
+  namespace: moonshot-labs
+spec:
+  instances: 1
+  storage:
+    size: 256Mi
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi

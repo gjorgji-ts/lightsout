@@ -1,0 +1,56 @@
+# jellyfish-cdn - managed by platform-offhours (cluster-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tentacle-edge
+  namespace: jellyfish-cdn
+  labels:
+    app: tentacle-edge
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: tentacle-edge
+  template:
+    metadata:
+      labels:
+        app: tentacle-edge
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bioluminescence
+  namespace: jellyfish-cdn
+  labels:
+    app: bioluminescence
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bioluminescence
+  template:
+    metadata:
+      labels:
+        app: bioluminescence
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

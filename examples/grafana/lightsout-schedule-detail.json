@@ -3,7 +3,6 @@
     {
       "name": "DS_PROMETHEUS",
       "label": "Prometheus",
-      "description": "",
       "type": "datasource",
       "pluginId": "prometheus",
       "pluginName": "Prometheus"
@@ -12,7 +11,7 @@
   "annotations": {
     "list": []
   },
-  "description": "Detailed view of a single LightsOut schedule with workload breakdown, performance metrics, and error tracking.",
+  "description": "One LightsOut schedule in full. Shows its state, what it manages, how much of that is off, how long its scaling takes, and what fails.",
   "editable": true,
   "graphTooltip": 1,
   "id": null,
@@ -28,34 +27,84 @@
   "panels": [
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 100,
       "title": "Schedule: $schedule",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The state of this schedule now.",
       "fieldConfig": {
         "defaults": {
-          "mappings": [
-            { "options": { "0": { "text": "Down", "color": "orange" }, "1": { "text": "Up", "color": "green" }, "2": { "text": "Warming Up", "color": "yellow" } }, "type": "value" }
-          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "orange", "value": null },
-              { "color": "green", "value": 1 },
-              { "color": "yellow", "value": 2 }
+              {
+                "color": "orange",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "yellow",
+                "value": 2
+              }
             ]
           },
-          "color": { "mode": "thresholds" }
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Down",
+                  "color": "orange",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Up",
+                  "color": "green",
+                  "index": 1
+                },
+                "2": {
+                  "text": "Warming Up",
+                  "color": "yellow",
+                  "index": 2
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
       "id": 1,
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "background",
@@ -66,491 +115,549 @@
       "type": "stat",
       "targets": [
         {
-          "expr": "lightsout_schedule_state{schedule=\"$schedule\"}",
+          "expr": "max(lightsout_schedule_state{schedule=\"$schedule\"})",
           "legendFormat": "",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The time left until this schedule scales its workloads up.",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null }
+              {
+                "color": "green",
+                "value": null
+              }
             ]
           },
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 5, "x": 4, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
       "id": 2,
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto"
       },
-      "title": "Next Upscale In",
+      "title": "Next Upscale",
       "type": "stat",
       "targets": [
         {
-          "expr": "lightsout_next_transition_seconds{schedule=\"$schedule\", transition_type=\"upscale\"}",
+          "expr": "min(lightsout_next_transition_seconds{schedule=\"$schedule\", transition_type=\"upscale\"})",
           "legendFormat": "",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The time left until this schedule scales its workloads down.",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "orange", "value": null }
+              {
+                "color": "orange",
+                "value": null
+              }
             ]
           },
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 5, "x": 9, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
       "id": 3,
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto"
       },
-      "title": "Next Downscale In",
+      "title": "Next Downscale",
       "type": "stat",
       "targets": [
         {
-          "expr": "lightsout_next_transition_seconds{schedule=\"$schedule\", transition_type=\"downscale\"}",
+          "expr": "min(lightsout_next_transition_seconds{schedule=\"$schedule\", transition_type=\"downscale\"})",
           "legendFormat": "",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Counts this schedule's managed workloads that are at zero replicas or suspended right now, against the total it manages.",
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 300 },
-              { "color": "red", "value": 600 }
+              {
+                "color": "orange",
+                "value": null
+              }
             ]
           },
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "id": 25,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "title": "Workloads Down Now",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(max by (workload_type) (lightsout_scaled_workloads{schedule=\"$schedule\"})) or vector(0)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Counts the scaling operations that failed inside the dashboard time range.",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "id": 5,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "title": "Errors",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(max_over_time(lightsout_scaling_errors_total{schedule=\"$schedule\"}[$__range])) or vector(0)",
+          "legendFormat": "",
+          "refId": "A",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The age of the last reconcile. A schedule that stops reconciling stops scaling.",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 300
+              },
+              {
+                "color": "red",
+                "value": 600
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
           "unit": "s"
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
       "id": 4,
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "auto",
-        "textMode": "auto",
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "auto"
-      },
-      "title": "Last Reconcile Age",
-      "type": "stat",
-      "targets": [
-        {
-          "expr": "time() - lightsout_last_reconcile_timestamp_seconds{schedule=\"$schedule\"}",
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
-            ]
-          },
-          "color": { "mode": "thresholds" }
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "overrides": []
-      },
-      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 1 },
-      "id": 5,
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto"
       },
-      "title": "Errors (24h)",
+      "title": "Reconcile Age",
       "type": "stat",
       "targets": [
         {
-          "expr": "sum(increase(lightsout_scaling_errors_total{schedule=\"$schedule\"}[24h])) or vector(0)",
+          "expr": "time() - max(lightsout_last_reconcile_timestamp_seconds{schedule=\"$schedule\"})",
           "legendFormat": "",
-          "refId": "A"
+          "refId": "A",
+          "instant": true
         }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "id": 101,
       "title": "Scaling Timeline",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Each band shows how long the schedule held one state. A yellow band is a schedule that is on the way up but does not serve yet.",
       "fieldConfig": {
         "defaults": {
           "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "fillOpacity": 30,
-            "lineWidth": 2,
-            "showPoints": "never",
-            "stacking": { "mode": "none" }
+            "lineWidth": 0,
+            "fillOpacity": 70,
+            "spanNulls": false,
+            "insertNulls": false
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
           },
           "mappings": [
-            { "options": { "0": { "text": "Down" }, "1": { "text": "Up" }, "2": { "text": "Warming Up" } }, "type": "value" }
-          ],
-          "color": { "mode": "palette-classic" },
-          "min": 0,
-          "max": 2
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Down",
+                  "color": "orange",
+                  "index": 0
+                },
+                "1": {
+                  "text": "Up",
+                  "color": "green",
+                  "index": 1
+                },
+                "2": {
+                  "text": "Warming Up",
+                  "color": "yellow",
+                  "index": 2
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 6 },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
       "id": 6,
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "mergeValues": true,
+        "showValue": "auto",
+        "alignValue": "center",
+        "rowHeight": 0.9,
+        "perPage": 25,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "title": "Schedule State Over Time",
-      "type": "timeseries",
+      "type": "state-timeline",
       "targets": [
         {
-          "expr": "lightsout_schedule_state{schedule=\"$schedule\"}",
+          "expr": "max(lightsout_schedule_state{schedule=\"$schedule\"})",
           "legendFormat": "State",
           "refId": "A"
         }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Counts the workloads this schedule has scaled in each namespace. The ten busiest namespaces over the window are shown, so a schedule with hundreds of namespaces still renders. Each operator pod keeps its own counter, so the line steps down when the pod restarts.",
       "fieldConfig": {
         "defaults": {
           "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 80,
-            "lineWidth": 1,
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 20,
+            "lineWidth": 2,
             "showPoints": "never",
-            "stacking": { "mode": "normal" }
+            "stacking": {
+              "mode": "none"
+            }
           },
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "short"
         },
         "overrides": []
       },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 12 },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
       "id": 7,
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
-      "title": "Scaling Operations by Namespace",
+      "title": "Top 10 Namespaces by Scaling Operations (cumulative)",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (namespace, operation) (increase(lightsout_scaling_operations_total{schedule=\"$schedule\"}[$__rate_interval]))",
-          "legendFormat": "{{ namespace }} ({{ operation }})",
+          "expr": "sum by (namespace) (max_over_time(lightsout_scaling_operations_total{schedule=\"$schedule\"}[$__rate_interval])) and topk(10, sum by (namespace) (max_over_time(lightsout_scaling_operations_total{schedule=\"$schedule\"}[$__range])))",
+          "legendFormat": "{{ namespace }}",
           "refId": "A"
         }
       ]
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
       "id": 102,
       "title": "Workload Details",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "The two lines that answer whether this schedule is doing its job. The gap between them is what is still running inside a down window.",
       "fieldConfig": {
         "defaults": {
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "smooth",
+            "lineInterpolation": "stepAfter",
             "fillOpacity": 20,
             "lineWidth": 2,
-            "showPoints": "auto",
-            "stacking": { "mode": "none" }
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
           },
-          "color": { "mode": "palette-classic" }
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "managed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "down"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 19
+      },
       "id": 8,
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
-      "title": "Managed Workloads by Type",
+      "title": "Workloads Managed and Down",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (workload_type) (lightsout_managed_workloads{schedule=\"$schedule\"})",
-          "legendFormat": "{{ workload_type }}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 20,
-            "lineWidth": 2,
-            "showPoints": "auto",
-            "stacking": { "mode": "none" }
-          },
-          "color": { "mode": "palette-classic" },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
-      "id": 9,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "title": "Workloads Processed by Result",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "sum by (result) (rate(lightsout_scaling_workloads_processed_total{schedule=\"$schedule\"}[$__rate_interval]))",
-          "legendFormat": "{{ result }}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 20,
-            "lineWidth": 2,
-            "showPoints": "auto",
-            "stacking": { "mode": "none" }
-          },
-          "color": { "mode": "palette-classic" }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
-      "id": 10,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "title": "Scaling Batches by Direction",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "sum by (direction) (rate(lightsout_scaling_batches_total{schedule=\"$schedule\"}[$__rate_interval]))",
-          "legendFormat": "{{ direction }}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
-      "id": 103,
-      "title": "Performance",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "scaleDistribution": { "type": "log", "log": 2 },
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false }
-          },
-          "color": { "mode": "scheme", "schemeId": "Oranges", "steps": 128 }
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
-      "id": 11,
-      "options": {
-        "calculate": true,
-        "calculation": { "xBuckets": { "mode": "size" } },
-        "cellGap": 1,
-        "color": { "mode": "scheme", "schemeId": "Oranges", "steps": 128 },
-        "yAxis": { "unit": "s" },
-        "tooltip": { "show": true }
-      },
-      "title": "Scaling Duration Heatmap",
-      "type": "heatmap",
-      "targets": [
-        {
-          "expr": "sum by (le) (increase(lightsout_scaling_duration_seconds_bucket{schedule=\"$schedule\"}[$__rate_interval]))",
-          "legendFormat": "{{ le }}",
-          "refId": "A",
-          "format": "heatmap"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 10,
-            "lineWidth": 2,
-            "showPoints": "auto",
-            "stacking": { "mode": "none" }
-          },
-          "color": { "mode": "palette-classic" },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
-      "id": 12,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "title": "Scaling Duration Percentiles",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.50, sum by (le, direction) (rate(lightsout_scaling_duration_seconds_bucket{schedule=\"$schedule\"}[$__rate_interval])))",
-          "legendFormat": "p50 {{ direction }}",
+          "expr": "sum(max by (workload_type) (lightsout_managed_workloads{schedule=\"$schedule\"}))",
+          "legendFormat": "managed",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le, direction) (rate(lightsout_scaling_duration_seconds_bucket{schedule=\"$schedule\"}[$__rate_interval])))",
-          "legendFormat": "p95 {{ direction }}",
+          "expr": "sum(max by (workload_type) (lightsout_scaled_workloads{schedule=\"$schedule\"}))",
+          "legendFormat": "down",
           "refId": "B"
-        },
-        {
-          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(lightsout_scaling_duration_seconds_bucket{schedule=\"$schedule\"}[$__rate_interval])))",
-          "legendFormat": "p99 {{ direction }}",
-          "refId": "C"
         }
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 80,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "stacking": { "mode": "normal" }
-          },
-          "color": { "mode": "palette-classic" },
-          "unit": "ops"
-        },
-        "overrides": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
       },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 36 },
-      "id": 13,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "title": "Operations by Namespace",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "sum by (namespace) (rate(lightsout_scaling_operations_total{schedule=\"$schedule\"}[$__rate_interval]))",
-          "legendFormat": "{{ namespace }}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
-      "id": 104,
-      "title": "Errors",
-      "type": "row"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth",
-            "fillOpacity": 30,
-            "lineWidth": 2,
-            "showPoints": "auto",
-            "stacking": { "mode": "none" }
-          },
-          "color": { "fixedColor": "red", "mode": "shades" },
-          "unit": "errors/s"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 45 },
-      "id": 14,
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "title": "Error Rate by Namespace",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "sum by (namespace) (rate(lightsout_scaling_errors_total{schedule=\"$schedule\"}[$__rate_interval]))",
-          "legendFormat": "{{ namespace }}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "How this schedule's workloads split across deployments, statefulsets and cronjobs, and how many of each are off right now.",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -558,68 +665,768 @@
             "displayMode": "auto",
             "inspect": false
           },
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "text",
+                "value": null
+              }
             ]
           }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Errors" },
+            "matcher": {
+              "id": "byName",
+              "options": "Down"
+            },
             "properties": [
-              { "id": "custom.displayMode", "value": "color-text" },
               {
-                "id": "thresholds",
+                "id": "noValue",
+                "value": "0"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 19
+      },
+      "id": 26,
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        },
+        "enablePagination": true
+      },
+      "title": "Workloads by Type",
+      "type": "table",
+      "targets": [
+        {
+          "expr": "max by (workload_type) (lightsout_managed_workloads{schedule=\"$schedule\"})",
+          "legendFormat": "",
+          "refId": "managed",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "expr": "max by (workload_type) (lightsout_scaled_workloads{schedule=\"$schedule\"})",
+          "legendFormat": "",
+          "refId": "down",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "transformations": [
+        {
+          "id": "seriesToColumns",
+          "options": {
+            "byField": "workload_type"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "__name__": true,
+              "__name__ 1": true,
+              "__name__ 2": true,
+              "job": true,
+              "job 1": true,
+              "job 2": true,
+              "instance": true,
+              "instance 1": true,
+              "instance 2": true,
+              "pod": true,
+              "pod 1": true,
+              "pod 2": true,
+              "container": true,
+              "container 1": true,
+              "container 2": true,
+              "endpoint": true,
+              "endpoint 1": true,
+              "endpoint 2": true,
+              "service": true,
+              "service 1": true,
+              "service 2": true,
+              "node": true,
+              "node 1": true,
+              "node 2": true,
+              "uid": true,
+              "uid 1": true,
+              "uid 2": true,
+              "prometheus": true,
+              "prometheus 1": true,
+              "prometheus 2": true,
+              "prometheus_replica": true,
+              "prometheus_replica 1": true,
+              "prometheus_replica 2": true,
+              "cluster": true,
+              "cluster 1": true,
+              "cluster 2": true,
+              "schedule": true,
+              "schedule 1": true,
+              "schedule 2": true,
+              "namespace": true,
+              "namespace 1": true,
+              "namespace 2": true,
+              "kind": true,
+              "kind 1": true,
+              "kind 2": true,
+              "transition_type": true,
+              "transition_type 1": true,
+              "transition_type 2": true
+            },
+            "renameByName": {
+              "workload_type": "Type",
+              "Value #managed": "Managed",
+              "Value #down": "Down"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Counts the workloads the scaling passes have handled, by result. A failure line that climbs is the first sign that a pass is only half done. Each operator pod keeps its own counter, so the line steps down when the pod restarts.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "success"
+            },
+            "properties": [
+              {
+                "id": "color",
                 "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    { "color": "green", "value": null },
-                    { "color": "red", "value": 1 }
-                  ]
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failure"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
                 }
               }
             ]
           }
         ]
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 45 },
-      "id": 15,
-      "options": {
-        "showHeader": true,
-        "sortBy": [{ "desc": true, "displayName": "Errors" }],
-        "footer": { "show": false }
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 19
       },
-      "title": "Errors by Namespace & Workload Type (24h)",
-      "type": "table",
+      "id": 9,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "title": "Workloads Processed by Result (cumulative)",
+      "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (namespace, workload_type) (increase(lightsout_scaling_errors_total{schedule=\"$schedule\"}[24h])) > 0",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "",
+          "expr": "sum by (result) (max_over_time(lightsout_scaling_workloads_processed_total{schedule=\"$schedule\"}[$__rate_interval]))",
+          "legendFormat": "{{ result }}",
           "refId": "A"
         }
-      ],
-      "transformations": [
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      },
+      "id": 103,
+      "title": "Performance",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "How long a full scaling pass takes, by direction, over the dashboard time range. The buckets are cumulative, so this covers every pass the current operator pod has run.",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "unit": "s",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "id": 12,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto"
+      },
+      "title": "Scaling Duration",
+      "type": "stat",
+      "targets": [
         {
-          "id": "organize",
-          "options": {
-            "excludeByName": { "Time": true, "__name__": true, "job": true, "instance": true, "schedule": true },
-            "renameByName": {
-              "namespace": "Namespace",
-              "workload_type": "Workload Type",
-              "Value": "Errors"
+          "expr": "histogram_quantile(0.50, sum by (le, direction) (max_over_time(lightsout_scaling_duration_seconds_bucket{schedule=\"$schedule\"}[$__range])))",
+          "legendFormat": "p50 {{ direction }}",
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, direction) (max_over_time(lightsout_scaling_duration_seconds_bucket{schedule=\"$schedule\"}[$__range])))",
+          "legendFormat": "p95 {{ direction }}",
+          "refId": "B",
+          "instant": true
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, direction) (max_over_time(lightsout_scaling_duration_seconds_bucket{schedule=\"$schedule\"}[$__range])))",
+          "legendFormat": "p99 {{ direction }}",
+          "refId": "C",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Counts the batches the scaling passes have run. A schedule without rate limits runs one batch per pass, so this only says something once upscaleRateLimit or downscaleRateLimit is set. Each operator pod keeps its own counter, so the line steps down when the pod restarts.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
             }
-          }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "title": "Scaling Batches by Direction (cumulative)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (direction) (max_over_time(lightsout_scaling_batches_total{schedule=\"$schedule\"}[$__rate_interval]))",
+          "legendFormat": "{{ direction }}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 104,
+      "title": "Errors and Termination",
+      "type": "row",
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Lists what failed to scale inside the dashboard time range. An empty panel is the healthy answer.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Errors"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "text",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "custom.displayMode",
+                    "value": "color-text"
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 37
+          },
+          "id": 15,
+          "options": {
+            "showHeader": true,
+            "footer": {
+              "show": false
+            },
+            "enablePagination": true,
+            "sortBy": [
+              {
+                "desc": true,
+                "displayName": "Errors"
+              }
+            ]
+          },
+          "title": "Errors by Namespace and Kind",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "sum by (namespace, workload_type) (max_over_time(lightsout_scaling_errors_total{schedule=\"$schedule\"}[$__range])) > 0",
+              "legendFormat": "",
+              "refId": "A",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true,
+                  "pod": true,
+                  "container": true,
+                  "endpoint": true,
+                  "service": true,
+                  "node": true,
+                  "uid": true,
+                  "prometheus": true,
+                  "prometheus_replica": true,
+                  "cluster": true,
+                  "schedule": true,
+                  "kind": true,
+                  "transition_type": true
+                },
+                "renameByName": {
+                  "namespace": "Namespace",
+                  "workload_type": "Kind",
+                  "Value": "Errors"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "The namespaces holding pods that outlived their grace period after a downscale. Those pods keep their nodes alive while the schedule reports Down. An empty panel is the healthy answer.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Stuck Pods"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "text",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "custom.displayMode",
+                    "value": "color-text"
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 37
+          },
+          "id": 18,
+          "options": {
+            "showHeader": true,
+            "footer": {
+              "show": false
+            },
+            "enablePagination": true,
+            "sortBy": [
+              {
+                "desc": true,
+                "displayName": "Stuck Pods"
+              }
+            ]
+          },
+          "title": "Stuck Terminating Pods",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "max by (namespace) (lightsout_stuck_terminating_pods{schedule=\"$schedule\"}) > 0",
+              "legendFormat": "",
+              "refId": "A",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true,
+                  "pod": true,
+                  "container": true,
+                  "endpoint": true,
+                  "service": true,
+                  "node": true,
+                  "uid": true,
+                  "prometheus": true,
+                  "prometheus_replica": true,
+                  "cluster": true,
+                  "schedule": true,
+                  "workload_type": true,
+                  "kind": true,
+                  "transition_type": true
+                },
+                "renameByName": {
+                  "namespace": "Namespace",
+                  "Value": "Stuck Pods"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "id": 105,
+      "title": "Custom Resources",
+      "type": "row",
+      "panels": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Counts the operator-managed custom resources this schedule matches, by kind. This is a gauge written on every reconcile, so it names what the schedule manages without waiting for the next transition. An empty panel means the schedule declares no customResources.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "displayMode": "auto",
+                "inspect": false
+              },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Kind"
+                },
+                "properties": [
+                  {
+                    "id": "custom.width",
+                    "value": 200
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 46
+          },
+          "id": 19,
+          "options": {
+            "showHeader": true,
+            "footer": {
+              "show": false
+            },
+            "enablePagination": true
+          },
+          "title": "Custom Resources Managed by Kind",
+          "type": "table",
+          "targets": [
+            {
+              "expr": "max by (kind) (lightsout_managed_custom_resources{schedule=\"$schedule\"})",
+              "legendFormat": "",
+              "refId": "A",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true,
+                  "job": true,
+                  "instance": true,
+                  "pod": true,
+                  "container": true,
+                  "endpoint": true,
+                  "service": true,
+                  "node": true,
+                  "uid": true,
+                  "prometheus": true,
+                  "prometheus_replica": true,
+                  "cluster": true,
+                  "schedule": true,
+                  "namespace": true,
+                  "workload_type": true,
+                  "transition_type": true
+                },
+                "renameByName": {
+                  "kind": "Kind",
+                  "Value": "Count"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "description": "Counts the custom resource operations this schedule has run, by kind. They run before the workloads go down, and before the workloads come back up.",
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "stepAfter",
+                "fillOpacity": 20,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "none"
+                }
+              },
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 46
+          },
+          "id": 17,
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "title": "Custom Resource Operations by Kind (cumulative)",
+          "type": "timeseries",
+          "targets": [
+            {
+              "expr": "sum by (workload_type, operation) (max_over_time(lightsout_scaling_operations_total{schedule=\"$schedule\", workload_type!~\"Deployment|StatefulSet|CronJob\"}[$__rate_interval]))",
+              "legendFormat": "{{ workload_type }} ({{ operation }})",
+              "refId": "A"
+            }
+          ]
         }
       ]
     }
   ],
   "schemaVersion": 39,
-  "tags": ["lightsout", "kubernetes", "cost-optimization"],
+  "tags": [
+    "lightsout",
+    "kubernetes",
+    "cost-optimization"
+  ],
   "templating": {
     "list": [
       {
@@ -638,7 +1445,10 @@
       },
       {
         "current": {},
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
         "definition": "label_values(lightsout_schedule_state, schedule)",
         "hide": 0,
         "includeAll": false,
@@ -646,7 +1456,10 @@
         "multi": false,
         "name": "schedule",
         "options": [],
-        "query": { "query": "label_values(lightsout_schedule_state, schedule)", "refId": "StandardVariableQuery" },
+        "query": {
+          "query": "label_values(lightsout_schedule_state, schedule)",
+          "refId": "StandardVariableQuery"
+        },
         "refresh": 2,
         "regex": "",
         "skipUrlSync": false,
@@ -655,10 +1468,14 @@
       }
     ]
   },
-  "time": { "from": "now-24h", "to": "now" },
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
   "title": "LightsOut - Schedule Detail",
   "uid": "lightsout-schedule-detail",
-  "version": 2
+  "version": 5
 }

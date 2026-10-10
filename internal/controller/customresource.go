@@ -358,6 +358,9 @@ func customResourcesDown(
 			if deleted > 0 {
 				ScalingOperationsTotal.WithLabelValues(scheduleLabel, "", cfg.Kind, constants.OperationDownscale).Add(float64(deleted))
 			}
+			// Nothing of this kind is left for the schedule to manage until the
+			// operator rebuilds it on upscale.
+			ManagedCustomResources.WithLabelValues(scheduleLabel, cfg.Kind).Set(0)
 			continue
 		}
 
@@ -368,6 +371,7 @@ func customResourcesDown(
 				"Failed to discover %s resources: %v", cfg.Kind, err)
 			continue
 		}
+		ManagedCustomResources.WithLabelValues(scheduleLabel, cfg.Kind).Set(float64(len(resources)))
 
 		for j := range resources {
 			obj := &resources[j]
@@ -411,15 +415,20 @@ func customResourcesUp(
 
 	for i := range core.CustomResources {
 		cfg := &core.CustomResources[i]
-		if cfg.Delete {
-			continue
-		}
 
 		resources, err := DiscoverCustomResources(ctx, c, cfg, namespaces)
 		if err != nil {
 			logger.Error(err, "failed to discover custom resources", "kind", cfg.Kind)
 			emitCustomResourceWarning(recorder, scheduleObj, "CustomResourceDiscoveryFailed",
 				"Failed to discover %s resources: %v", cfg.Kind, err)
+			continue
+		}
+		ManagedCustomResources.WithLabelValues(scheduleLabel, cfg.Kind).Set(float64(len(resources)))
+
+		// A deleted entry is rebuilt by its own operator once the entry that paused
+		// it is restored. There is nothing here to write back, but the count above
+		// still reports what came back.
+		if cfg.Delete {
 			continue
 		}
 

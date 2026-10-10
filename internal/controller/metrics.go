@@ -27,6 +27,7 @@ const (
 	labelTransitionType = "transition_type"
 	labelNamespace      = "namespace"
 	labelWorkloadType   = "workload_type"
+	labelKind           = "kind"
 	labelOperation      = "operation"
 	labelDirection      = "direction"
 	labelResult         = "result"
@@ -78,6 +79,35 @@ var (
 		[]string{labelSchedule, labelWorkloadType},
 	)
 
+	// ScaledWorkloads tracks how many managed workloads are currently off: deployments
+	// and statefulsets at zero replicas, and suspended cronjobs.
+	//
+	// ManagedWorkloads alone cannot answer the question the schedule exists to answer.
+	// A schedule that reports 400 managed workloads has released nothing until they
+	// are actually at zero. A downscale that half fails leaves the difference here.
+	ScaledWorkloads = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "lightsout_scaled_workloads",
+			Help: "Managed workloads currently scaled to zero or suspended",
+		},
+		[]string{labelSchedule, labelWorkloadType},
+	)
+
+	// ManagedCustomResources tracks how many operator-managed custom resources each
+	// schedule matches, by kind.
+	//
+	// The scaling counters cannot answer this. A counter only moves at a transition,
+	// and restarts with the operator pod. After a restart, nothing reports which kinds
+	// a schedule manages until the next transition fires. This gauge is written on
+	// every reconcile, so the series exists as soon as the schedule is reconciled.
+	ManagedCustomResources = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "lightsout_managed_custom_resources",
+			Help: "Operator-managed custom resources matched by a schedule, by kind",
+		},
+		[]string{labelSchedule, labelKind},
+	)
+
 	// ScalingBatchesTotal counts batches processed during scaling
 	ScalingBatchesTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -127,6 +157,29 @@ var (
 	)
 )
 
+// clearScheduleMetrics drops every series a schedule published.
+//
+// A Prometheus child lives until something deletes it. A deleted schedule would
+// otherwise keep reporting its last state for as long as the operator pod runs. On a
+// cluster where schedules come and go, those ghosts accumulate in the registry and in
+// every dashboard that lists schedules.
+func clearScheduleMetrics(scheduleLabel string) {
+	match := prometheus.Labels{labelSchedule: scheduleLabel}
+
+	ScheduleState.DeletePartialMatch(match)
+	NextTransitionSeconds.DeletePartialMatch(match)
+	ScalingOperationsTotal.DeletePartialMatch(match)
+	ScalingErrorsTotal.DeletePartialMatch(match)
+	ManagedWorkloads.DeletePartialMatch(match)
+	ScaledWorkloads.DeletePartialMatch(match)
+	ManagedCustomResources.DeletePartialMatch(match)
+	ScalingBatchesTotal.DeletePartialMatch(match)
+	ScalingWorkloadsProcessed.DeletePartialMatch(match)
+	ScalingDurationSeconds.DeletePartialMatch(match)
+	StuckTerminatingPods.DeletePartialMatch(match)
+	LastReconcileTime.DeletePartialMatch(match)
+}
+
 func init() {
 	metrics.Registry.MustRegister(
 		ScheduleState,
@@ -134,6 +187,8 @@ func init() {
 		ScalingOperationsTotal,
 		ScalingErrorsTotal,
 		ManagedWorkloads,
+		ScaledWorkloads,
+		ManagedCustomResources,
 		ScalingBatchesTotal,
 		ScalingWorkloadsProcessed,
 		ScalingDurationSeconds,

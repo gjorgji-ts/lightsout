@@ -3,12 +3,48 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLUSTER_NAME="lightsout-demo"
-CERT_MANAGER_VERSION="v1.19.1"
+CERT_MANAGER_VERSION="v1.21.2"
+CNPG_VERSION="1.30.1"
+RABBITMQ_OPERATOR_VERSION="v2.23.0"
+# The demo tracks the newest release rather than a pinned version, so it cannot drift
+# behind the dashboards. The image has a "latest" tag. The chart has no equivalent:
+# helm reads --version as a semver constraint, so omitting it is what takes the newest
+# chart. A locally built image gets its own tag, so a remote run after a local one
+# cannot pick up the source build by mistake.
+LIGHTSOUT_IMAGE_TAG="latest"
+LIGHTSOUT_DEV_TAG="dev"
 SCRIPT_DIR_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+DASHBOARD_DIR="$SCRIPT_DIR_ROOT/examples/grafana"
 LIGHTSOUT_CHART_OCI="oci://ghcr.io/gjorgji-ts/charts/lightsout"
 LIGHTSOUT_CHART_LOCAL="$SCRIPT_DIR_ROOT/charts/lightsout"
-LIGHTSOUT_IMAGE="ghcr.io/gjorgji-ts/lightsout:latest"
+CNPG_MANIFEST="https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v${CNPG_VERSION}/cnpg-${CNPG_VERSION}.yaml"
+RABBITMQ_MANIFEST="https://github.com/rabbitmq/cluster-operator/releases/download/${RABBITMQ_OPERATOR_VERSION}/cluster-operator.yml"
 GRAFANA_PASSWORD="$(openssl rand -base64 12)"
+
+# Namespaces with plain workloads, in the order the dashboard lists them.
+DEMO_NAMESPACES=(
+    neon-arcade
+    midnight-diner
+    jellyfish-cdn
+    moonshot-labs
+    sleepy-hollow
+    popcorn-ci
+    lava-lamp-analytics
+    yak-shavers
+    hammock-district
+    taco-truck-api
+    pixel-forge
+    robot-petting-zoo
+    library-of-sand
+    goldfish-memory
+    conveyor-belt
+    cinema-paradiso
+    greenhouse-grid
+    ledger-lighthouse
+    abacus-annex
+    dress-rehearsal
+    understudy-stage
+)
 
 # Colors
 RED='\033[0;31m'
@@ -79,8 +115,19 @@ cmd_up() {
     helm repo update metrics-server
     helm upgrade --install metrics-server metrics-server/metrics-server \
         --namespace kube-system \
-        --set args={--kubelet-insecure-tls} \
+        --set 'args={--kubelet-insecure-tls}' \
         --wait --timeout 2m
+
+    # Install the two operators behind the custom resource demo
+    log "Installing CloudNativePG ${CNPG_VERSION}..."
+    kubectl apply --server-side -f "$CNPG_MANIFEST"
+    log "Installing the RabbitMQ cluster operator ${RABBITMQ_OPERATOR_VERSION}..."
+    kubectl apply --server-side -f "$RABBITMQ_MANIFEST"
+    log "Waiting for the operators..."
+    kubectl wait deployment/cnpg-controller-manager \
+        --for=condition=Available --namespace cnpg-system --timeout=5m
+    kubectl wait deployment/rabbitmq-cluster-operator \
+        --for=condition=Available --namespace rabbitmq-system --timeout=5m
 
     # Install kube-prometheus-stack
     log "Installing kube-prometheus-stack..."
@@ -93,62 +140,68 @@ cmd_up() {
         --set grafana.adminPassword="$GRAFANA_PASSWORD" \
         --wait --timeout 5m
 
-    # Deploy Grafana dashboards
+    # Deploy the Grafana dashboards straight from examples/grafana, so there is
+    # only one copy of each dashboard in the repository.
     log "Deploying Grafana dashboards..."
-    kubectl apply -f "$SCRIPT_DIR/manifests/grafana-dashboards.yaml"
+    kubectl create configmap lightsout-grafana-dashboards \
+        --namespace monitoring \
+        --from-file "$DASHBOARD_DIR/lightsout-overview.json" \
+        --from-file "$DASHBOARD_DIR/lightsout-schedule-detail.json" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    kubectl label configmap lightsout-grafana-dashboards \
+        --namespace monitoring grafana_dashboard=1 --overwrite
 
     # Resolve chart and image based on source mode
+    local helm_args=()
     if [[ "$source" == "remote" ]]; then
-        log "Using chart from OCI registry: $LIGHTSOUT_CHART_OCI"
-        LIGHTSOUT_CHART="$LIGHTSOUT_CHART_OCI"
+        log "Using the newest chart from the OCI registry: $LIGHTSOUT_CHART_OCI"
+        helm_args=("$LIGHTSOUT_CHART_OCI")
 
-        log "Pulling image directly into Kind node: $LIGHTSOUT_IMAGE"
+        local image="ghcr.io/gjorgji-ts/lightsout:${LIGHTSOUT_IMAGE_TAG}"
+        log "Pulling image directly into Kind node: $image"
         local node="${CLUSTER_NAME}-control-plane"
-        local platform="linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
-        docker exec "$node" ctr --namespace=k8s.io images pull --platform "$platform" "$LIGHTSOUT_IMAGE"
+        local arch
+        arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+        local platform="linux/${arch}"
+        docker exec "$node" ctr --namespace=k8s.io images pull --platform "$platform" "$image"
     else
         log "Using local chart: $LIGHTSOUT_CHART_LOCAL"
-        LIGHTSOUT_CHART="$LIGHTSOUT_CHART_LOCAL"
+        helm_args=("$LIGHTSOUT_CHART_LOCAL" --set "image.tag=${LIGHTSOUT_DEV_TAG}")
 
-        log "Building image locally: $LIGHTSOUT_IMAGE"
-        make -C "$SCRIPT_DIR_ROOT" docker-build IMG="$LIGHTSOUT_IMAGE"
+        local image="ghcr.io/gjorgji-ts/lightsout:${LIGHTSOUT_DEV_TAG}"
+        log "Building image locally: $image"
+        make -C "$SCRIPT_DIR_ROOT" docker-build IMG="$image"
         log "Loading image into Kind cluster..."
-        kind load docker-image "$LIGHTSOUT_IMAGE" --name "$CLUSTER_NAME"
+        kind load docker-image "$image" --name "$CLUSTER_NAME"
     fi
 
     # Install LightsOut operator
     log "Installing LightsOut operator..."
     kubectl create namespace lightsout-system --dry-run=client -o yaml | kubectl apply -f -
-    helm upgrade --install lightsout "$LIGHTSOUT_CHART" \
+    helm upgrade --install lightsout "${helm_args[@]}" \
         --namespace lightsout-system \
         --values "$SCRIPT_DIR/values/lightsout.yaml" \
         --wait --timeout 5m
 
     # Deploy demo apps
     log "Deploying demo namespaces and apps..."
-    kubectl apply -f "$SCRIPT_DIR/manifests/namespaces.yaml"
-    kubectl apply -f "$SCRIPT_DIR/manifests/apps-frontend.yaml"
-    kubectl apply -f "$SCRIPT_DIR/manifests/apps-backend.yaml"
-    kubectl apply -f "$SCRIPT_DIR/manifests/team-data.yaml"
-    kubectl apply -f "$SCRIPT_DIR/manifests/team-platform.yaml"
+    kubectl apply -f "$SCRIPT_DIR/manifests/apps/"
 
     log "Waiting for demo apps to be ready..."
-    kubectl wait deployment --all \
-        --for=condition=Available \
-        --namespace team-frontend \
-        --timeout=120s
-    kubectl wait deployment --all \
-        --for=condition=Available \
-        --namespace team-backend \
-        --timeout=120s
-    kubectl wait deployment --all \
-        --for=condition=Available \
-        --namespace team-data \
-        --timeout=120s
-    kubectl wait deployment --all \
-        --for=condition=Available \
-        --namespace team-platform \
-        --timeout=120s
+    for ns in "${DEMO_NAMESPACES[@]}"; do
+        kubectl wait deployment --all \
+            --for=condition=Available \
+            --namespace "$ns" \
+            --timeout=180s
+    done
+
+    log "Waiting for the operator-managed resources to be ready..."
+    kubectl wait cluster.postgresql.cnpg.io/launch-log \
+        --for=condition=Ready --namespace moonshot-labs --timeout=5m
+    kubectl wait cluster.postgresql.cnpg.io/ledger-db \
+        --for=condition=Ready --namespace ledger-lighthouse --timeout=5m
+    kubectl wait rabbitmqcluster.rabbitmq.com/bubble-bus \
+        --for=condition=AllReplicasReady --namespace lava-lamp-analytics --timeout=5m
 
     # Wait for LightsOutSchedule CRD and webhook to be ready
     log "Waiting for LightsOutSchedule CRD..."
@@ -163,8 +216,8 @@ cmd_up() {
         sleep 2
     done
 
-    # Deploy schedule
-    log "Deploying demo schedule..."
+    # Deploy schedules
+    log "Deploying demo schedules..."
     kubectl apply -f "$SCRIPT_DIR/manifests/schedules.yaml"
 
     echo ""
@@ -176,16 +229,20 @@ cmd_up() {
     echo -e "  Username:  ${GREEN}admin${NC}"
     echo -e "  Password:  ${GREEN}${GRAFANA_PASSWORD}${NC}"
     echo ""
-    echo -e "  The demo schedule cycles every ~3 minutes."
+    echo -e "  14 schedules, 21 namespaces, 3 operator-managed resources."
+    echo -e "  The ones worth watching:"
+    echo -e "    ${CYAN}platform-offhours${NC}   cluster-scoped, 6 min cycle, hibernates a Postgres cluster"
+    echo -e "    ${CYAN}batch-offhours${NC}      cluster-scoped, 6 min cycle, half a cycle apart"
+    echo -e "    ${CYAN}reporting-offhours${NC}  cluster-scoped, 20 min cycle, a second Postgres cluster"
+    echo -e "    ${CYAN}analytics-offhours${NC}  lava-lamp-analytics, 10 min cycle, stops a RabbitMQ cluster"
+    echo -e "    ${CYAN}cache-offhours${NC}      goldfish-memory, 3 min cycle, the fastest one"
+    echo ""
     echo -e "  Open the ${CYAN}LightsOut - Overview${NC} dashboard in Grafana to watch."
+    echo -e "  Give it two or three cycles to fill in."
     echo ""
-    echo -e "  To simulate namespace-scoped schedule adoption for ${CYAN}team-platform${NC}:"
-    echo -e "  ${YELLOW}kubectl apply -f manifests/team-platform-ns-schedule.yaml${NC}"
-    echo -e "  The namespace will stop being managed by the cluster schedule"
-    echo -e "  and be taken over by its own namespace-scoped schedule."
-    echo ""
-    echo -e "  Run ${YELLOW}./demo.sh status${NC} to check workload state."
-    echo -e "  Run ${YELLOW}./demo.sh down${NC} to tear everything down."
+    echo -e "  ${YELLOW}./demo.sh adopt${NC}   hand hammock-district from after-hours to its own schedule"
+    echo -e "  ${YELLOW}./demo.sh status${NC}  show schedule and workload state"
+    echo -e "  ${YELLOW}./demo.sh down${NC}    tear down the Kind cluster"
     echo ""
 }
 
@@ -195,38 +252,54 @@ cmd_down() {
     log "Done."
 }
 
+cmd_adopt() {
+    log "Giving hammock-district its own namespace-scoped schedule..."
+    kubectl apply -f "$SCRIPT_DIR/manifests/sandbox-ns-schedule.yaml"
+    echo ""
+    echo -e "  platform-offhours releases the namespace on its next reconcile and"
+    echo -e "  stops counting its workloads. ${YELLOW}sandbox-offhours${NC} takes over on an"
+    echo -e "  8 minute cycle."
+}
+
 cmd_status() {
-    echo -e "${CYAN}=== LightsOut Schedules ===${NC}"
-    kubectl get lightsoutschedules.lightsout.techsupport.mk 2>/dev/null || warn "No schedules found."
+    echo -e "${CYAN}=== Schedules ===${NC}"
+    kubectl get lightsoutschedules.lightsout.techsupport.mk 2>/dev/null || warn "No cluster schedules found."
     echo ""
-    echo -e "${CYAN}=== team-frontend ===${NC}"
-    kubectl get deployments -n team-frontend 2>/dev/null || true
+    kubectl get lightsoutnamespaceschedules.lightsout.techsupport.mk \
+        --all-namespaces 2>/dev/null || true
     echo ""
-    echo -e "${CYAN}=== team-backend ===${NC}"
-    kubectl get deployments,statefulsets,cronjobs -n team-backend 2>/dev/null || true
+    for ns in "${DEMO_NAMESPACES[@]}"; do
+        echo -e "${CYAN}=== ${ns} ===${NC}"
+        kubectl get deployments,statefulsets,cronjobs --namespace "$ns" 2>/dev/null || true
+        echo ""
+    done
+    echo -e "${CYAN}=== Operator-managed resources ===${NC}"
+    kubectl get cluster.postgresql.cnpg.io --all-namespaces \
+        -o 'custom-columns=NS:.metadata.namespace,NAME:.metadata.name,INSTANCES:.spec.instances,HIBERNATION:.metadata.annotations.cnpg\.io/hibernation,STATUS:.status.phase' 2>/dev/null || true
+    kubectl get rabbitmqcluster.rabbitmq.com/bubble-bus --namespace lava-lamp-analytics \
+        -o 'custom-columns=NAME:.metadata.name,REPLICAS:.spec.replicas,READY:.status.conditions[?(@.type=="AllReplicasReady")].status' 2>/dev/null || true
     echo ""
-    echo -e "${CYAN}=== team-data ===${NC}"
-    kubectl get deployments,statefulsets,cronjobs -n team-data 2>/dev/null || true
-    echo ""
-    echo -e "${CYAN}=== team-platform ===${NC}"
-    kubectl get deployments,statefulsets -n team-platform 2>/dev/null || true
+    echo -e "${CYAN}=== Terminating pods ===${NC}"
+    kubectl get pods --all-namespaces 2>/dev/null | awk 'NR==1 || /Terminating/' || true
     echo ""
     echo -e "Grafana: ${GREEN}http://localhost:30080${NC}  (admin / <password from initial setup>)"
 }
 
 case "${1:-help}" in
-    up)     shift; cmd_up "$@" ;;
-    down)   cmd_down ;;
-    status) cmd_status ;;
+    up)      shift; cmd_up "$@" ;;
+    down)    cmd_down ;;
+    status)  cmd_status ;;
+    adopt)   cmd_adopt ;;
     *)
-        echo "Usage: $0 {up|down|status} [options]"
+        echo "Usage: $0 {up|down|status|adopt} [options]"
         echo ""
         echo "  up [--source local|remote]"
         echo "          Create Kind cluster and deploy full demo environment"
         echo "          --source local   Build image and use chart from source"
-        echo "          --source remote  Pull image and chart from ghcr.io (default)"
+        echo "          --source remote  Pull the newest released image and chart from ghcr.io (default)"
         echo "  down    Tear down the Kind cluster"
         echo "  status  Show schedule and workload state"
+        echo "  adopt   Hand hammock-district to its own namespace-scoped schedule"
         exit 1
         ;;
 esac

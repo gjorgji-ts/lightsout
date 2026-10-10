@@ -1,22 +1,20 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: team-data
----
+# greenhouse-grid - managed by iot-offhours (namespace-scoped)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: data-api
-  namespace: team-data
+  name: sensor-sink
+  namespace: greenhouse-grid
+  labels:
+    app: sensor-sink
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: data-api
+      app: sensor-sink
   template:
     metadata:
       labels:
-        app: data-api
+        app: sensor-sink
     spec:
       containers:
         - name: nginx
@@ -32,18 +30,20 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: data-store
-  namespace: team-data
+  name: reading-store
+  namespace: greenhouse-grid
+  labels:
+    app: reading-store
 spec:
-  serviceName: data-store
-  replicas: 3
+  serviceName: reading-store
+  replicas: 2
   selector:
     matchLabels:
-      app: data-store
+      app: reading-store
   template:
     metadata:
       labels:
-        app: data-store
+        app: reading-store
     spec:
       containers:
         - name: nginx
@@ -59,18 +59,20 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: data-pipeline
-  namespace: team-data
+  name: watering-can
+  namespace: greenhouse-grid
+  labels:
+    app: watering-can
 spec:
-  schedule: "*/15 * * * *"
+  schedule: "*/10 * * * *"
   jobTemplate:
     spec:
       template:
         spec:
           containers:
-            - name: pipeline
+            - name: work
               image: busybox:latest
-              command: ["sh", "-c", "echo 'Running pipeline...' && sleep 3 && echo 'Done.'"]
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
               resources:
                 requests:
                   cpu: 5m
@@ -79,13 +81,3 @@ spec:
                   cpu: 50m
                   memory: 16Mi
           restartPolicy: OnFailure
----
-apiVersion: lightsout.techsupport.mk/v1alpha1
-kind: LightsOutNamespaceSchedule
-metadata:
-  name: data-schedule
-  namespace: team-data
-spec:
-  upscale: "*/6 * * * *"
-  downscale: "3-59/6 * * * *"
-  timezone: "UTC"

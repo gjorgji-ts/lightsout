@@ -1,0 +1,57 @@
+# abacus-annex - managed by reporting-offhours (cluster-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tally-keeper
+  namespace: abacus-annex
+  labels:
+    app: tally-keeper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tally-keeper
+  template:
+    metadata:
+      labels:
+        app: tally-keeper
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: abacus-store
+  namespace: abacus-annex
+  labels:
+    app: abacus-store
+spec:
+  serviceName: abacus-store
+  replicas: 2
+  selector:
+    matchLabels:
+      app: abacus-store
+  template:
+    metadata:
+      labels:
+        app: abacus-store
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

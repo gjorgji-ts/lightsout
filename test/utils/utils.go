@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	certmanagerVersion = "v1.19.1"
+	certmanagerVersion = "v1.21.2"
 	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
 
 	defaultKindBinary  = "kind"
@@ -173,7 +173,7 @@ func GetProjectDir() (string, error) {
 	return wd, nil
 }
 
-// UncommentCode searches for target in the file and remove the comment prefix
+// UncommentCode searches for target in the file and removes the comment prefix
 // of the target content. The target content may span multiple lines.
 func UncommentCode(filename, target, prefix string) error {
 	// false positive

@@ -1,0 +1,111 @@
+# midnight-diner - managed by platform-offhours (cluster-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pancake-flipper
+  namespace: midnight-diner
+  labels:
+    app: pancake-flipper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pancake-flipper
+  template:
+    metadata:
+      labels:
+        app: pancake-flipper
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milkshake-mixer
+  namespace: midnight-diner
+  labels:
+    app: milkshake-mixer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: milkshake-mixer
+  template:
+    metadata:
+      labels:
+        app: milkshake-mixer
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: pie-case
+  namespace: midnight-diner
+  labels:
+    app: pie-case
+spec:
+  serviceName: pie-case
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pie-case
+  template:
+    metadata:
+      labels:
+        app: pie-case
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dish-washer
+  namespace: midnight-diner
+  labels:
+    app: dish-washer
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: work
+              image: busybox:latest
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 16Mi
+          restartPolicy: OnFailure

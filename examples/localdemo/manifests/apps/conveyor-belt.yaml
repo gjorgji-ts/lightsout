@@ -1,0 +1,54 @@
+# conveyor-belt - managed by queue-offhours (namespace-scoped)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-feeder
+  namespace: conveyor-belt
+  labels:
+    app: job-feeder
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: job-feeder
+  template:
+    metadata:
+      labels:
+        app: job-feeder
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:alpine
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: belt-oiler
+  namespace: conveyor-belt
+  labels:
+    app: belt-oiler
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: work
+              image: busybox:latest
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
+              resources:
+                requests:
+                  cpu: 5m
+                  memory: 8Mi
+                limits:
+                  cpu: 50m
+                  memory: 16Mi
+          restartPolicy: OnFailure

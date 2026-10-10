@@ -1,17 +1,20 @@
+# sleepy-hollow - managed by batch-offhours (cluster-scoped)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: api-server
-  namespace: team-backend
+  name: headless-horseman
+  namespace: sleepy-hollow
+  labels:
+    app: headless-horseman
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
-      app: api-server
+      app: headless-horseman
   template:
     metadata:
       labels:
-        app: api-server
+        app: headless-horseman
     spec:
       containers:
         - name: nginx
@@ -27,17 +30,19 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: worker
-  namespace: team-backend
+  name: pumpkin-carver
+  namespace: sleepy-hollow
+  labels:
+    app: pumpkin-carver
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
-      app: worker
+      app: pumpkin-carver
   template:
     metadata:
       labels:
-        app: worker
+        app: pumpkin-carver
     spec:
       containers:
         - name: nginx
@@ -53,18 +58,20 @@ spec:
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: cache
-  namespace: team-backend
+  name: haunted-ledger
+  namespace: sleepy-hollow
+  labels:
+    app: haunted-ledger
 spec:
-  serviceName: cache
+  serviceName: haunted-ledger
   replicas: 2
   selector:
     matchLabels:
-      app: cache
+      app: haunted-ledger
   template:
     metadata:
       labels:
-        app: cache
+        app: haunted-ledger
     spec:
       containers:
         - name: nginx
@@ -80,18 +87,20 @@ spec:
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: report-generator
-  namespace: team-backend
+  name: midnight-ride
+  namespace: sleepy-hollow
+  labels:
+    app: midnight-ride
 spec:
-  schedule: "*/10 * * * *"
+  schedule: "*/15 * * * *"
   jobTemplate:
     spec:
       template:
         spec:
           containers:
-            - name: report
+            - name: work
               image: busybox:latest
-              command: ["sh", "-c", "echo 'Generating report...' && sleep 5 && echo 'Done.'"]
+              command: ["sh", "-c", "echo 'working...' && sleep 3 && echo 'done.'"]
               resources:
                 requests:
                   cpu: 5m
@@ -100,43 +109,3 @@ spec:
                   cpu: 50m
                   memory: 16Mi
           restartPolicy: OnFailure
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: api-server
-  namespace: team-backend
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: api-server
-  minReplicas: 2
-  maxReplicas: 6
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 60
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: worker
-  namespace: team-backend
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: worker
-  minReplicas: 2
-  maxReplicas: 4
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 70

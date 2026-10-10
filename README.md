@@ -220,18 +220,24 @@ LightsOut serves these Prometheus metrics on the metrics endpoint:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `lightsout_schedule_state` | Gauge | State per schedule (1=Up, 0=Down) |
+| `lightsout_schedule_state` | Gauge | State per schedule (0=Down, 1=Up, 2=Warming up) |
 | `lightsout_next_transition_seconds` | Gauge | Seconds until the next transition |
 | `lightsout_scaling_operations_total` | Counter | Scaling operations by schedule, namespace and type |
 | `lightsout_scaling_errors_total` | Counter | Scaling errors |
 | `lightsout_managed_workloads` | Gauge | Workloads under management |
+| `lightsout_scaled_workloads` | Gauge | Managed workloads currently at zero or suspended |
+| `lightsout_managed_custom_resources` | Gauge | Operator-managed custom resources matched, by kind |
 | `lightsout_scaling_batches_total` | Counter | Batches processed |
 | `lightsout_scaling_workloads_processed_total` | Counter | Workloads processed, by result |
 | `lightsout_scaling_duration_seconds` | Histogram | Duration of scaling operations |
 | `lightsout_stuck_terminating_pods` | Gauge | Pods past their grace period after a downscale |
 | `lightsout_last_reconcile_timestamp_seconds` | Gauge | Unix timestamp of the last reconcile |
 
+On `lightsout_scaling_operations_total` and `lightsout_scaling_errors_total`, the `workload_type` label carries the kind. For a custom resource that is its own kind, such as `Cluster` or `RabbitmqCluster`, rather than `Deployment`, `StatefulSet` or `CronJob`.
+
 LightsOut also records scaling events as Kubernetes Events on the schedule resource.
+
+Two Grafana dashboards are in [examples/grafana](examples/grafana): a fleet overview and a per-schedule detail view. [examples/localdemo](examples/localdemo) brings up a Kind cluster with schedules, operator-managed workloads, Prometheus and both dashboards loaded, in one command.
 
 ## Using a node autoscaler
 

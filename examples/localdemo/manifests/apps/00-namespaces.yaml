@@ -1,0 +1,148 @@
+# Every demo namespace. The schedule that owns each one is named in the
+# header of that namespace's own file.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: neon-arcade
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: midnight-diner
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jellyfish-cdn
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: moonshot-labs
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sleepy-hollow
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: popcorn-ci
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lava-lamp-analytics
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yak-shavers
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hammock-district
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: taco-truck-api
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pixel-forge
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: robot-petting-zoo
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: library-of-sand
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goldfish-memory
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: conveyor-belt
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cinema-paradiso
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: greenhouse-grid
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ledger-lighthouse
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: abacus-annex
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dress-rehearsal
+  labels:
+    demo: lightsout
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: understudy-stage
+  labels:
+    demo: lightsout

@@ -68,7 +68,7 @@ type LightsOutNamespaceScheduleReconciler struct {
 func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Fetch the schedule
+	// Get the schedule
 	var schedule lightsoutv1alpha1.LightsOutNamespaceSchedule
 	if err := r.Get(ctx, req.NamespacedName, &schedule); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -248,6 +248,9 @@ func (r *LightsOutNamespaceScheduleReconciler) Reconcile(ctx context.Context, re
 	ManagedWorkloads.WithLabelValues(scheduleLabel, "deployment").Set(float64(reported.DeploymentsManaged))
 	ManagedWorkloads.WithLabelValues(scheduleLabel, "statefulset").Set(float64(reported.StatefulSetsManaged))
 	ManagedWorkloads.WithLabelValues(scheduleLabel, "cronjob").Set(float64(reported.CronJobsManaged))
+	ScaledWorkloads.WithLabelValues(scheduleLabel, "deployment").Set(float64(reported.DeploymentsScaled))
+	ScaledWorkloads.WithLabelValues(scheduleLabel, "statefulset").Set(float64(reported.StatefulSetsScaled))
+	ScaledWorkloads.WithLabelValues(scheduleLabel, "cronjob").Set(float64(reported.CronJobsSuspended))
 
 	LastReconcileTime.WithLabelValues(scheduleLabel).SetToCurrentTime()
 
@@ -456,6 +459,9 @@ func (r *LightsOutNamespaceScheduleReconciler) handleDeletion(ctx context.Contex
 		r.Recorder.Eventf(schedule, nil, corev1.EventTypeNormal, "CleanupComplete", "Cleanup",
 			"All managed workloads restored to original state")
 	}
+
+	// The schedule is going away, so its series must go with it.
+	clearScheduleMetrics(schedule.Namespace + "/" + schedule.Name)
 
 	// Remove finalizer to allow deletion
 	controllerutil.RemoveFinalizer(schedule, constants.FinalizerName)

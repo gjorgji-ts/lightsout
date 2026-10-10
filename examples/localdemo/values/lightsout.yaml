@@ -1,6 +1,3 @@
-image:
-  tag: latest
-
 metrics:
   secure: false
 
@@ -8,3 +5,13 @@ podAnnotations:
   prometheus.io/scrape: "true"
   prometheus.io/port: "8080"
   prometheus.io/path: "/metrics"
+
+rbac:
+  # The API groups named in spec.customResources are not known ahead of time, so
+  # the chart needs them listed. The demo turns off a CloudNativePG cluster and a
+  # RabbitMQ cluster.
+  customResources:
+    - apiGroups: ["postgresql.cnpg.io"]
+      resources: ["clusters"]
+    - apiGroups: ["rabbitmq.com"]
+      resources: ["rabbitmqclusters"]

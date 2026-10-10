@@ -50,12 +50,12 @@ import (
 // Operator versions. Overridable so a stale default can be worked around without
 // editing the test.
 var (
-	cnpgVersion       = envOr("CNPG_VERSION", "1.30.0")
+	cnpgVersion       = envOr("CNPG_VERSION", "1.30.1")
 	eckVersion        = envOr("ECK_VERSION", "3.5.0")
-	elasticVersion    = envOr("ELASTIC_STACK_VERSION", "9.5.4")
+	elasticVersion    = envOr("ELASTIC_STACK_VERSION", "9.5.5")
 	rabbitmqVersion   = envOr("RABBITMQ_OPERATOR_VERSION", "v2.23.0")
-	clickhouseVersion = envOr("CLICKHOUSE_OPERATOR_VERSION", "release-0.27.3")
-	keycloakVersion   = envOr("KEYCLOAK_VERSION", "26.7.4")
+	clickhouseVersion = envOr("CLICKHOUSE_OPERATOR_VERSION", "release-0.27.4")
+	keycloakVersion   = envOr("KEYCLOAK_VERSION", "26.8.0")
 	starrocksVersion  = envOr("STARROCKS_OPERATOR_VERSION", "v1.11.7")
 	mariadbChartVer   = envOr("MARIADB_OPERATOR_VERSION", "26.10.1")
 	redisChartVersion = envOr("REDIS_OPERATOR_VERSION", "0.26.1")

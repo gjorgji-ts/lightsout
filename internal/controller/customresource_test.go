@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -863,5 +865,120 @@ func TestClearCustomResourceStateSurvivesAStaleObject(t *testing.T) {
 	}
 	if got.GetAnnotations()["operator.example/status-generation"] != "8" {
 		t.Error("the operator's own annotation was lost or reverted")
+	}
+}
+
+// TestManagedCustomResourcesGauge covers what the scaling counters cannot answer:
+// which kinds a schedule manages, and how many of each, without waiting for the next
+// transition. The gauge is written on every reconcile, in both directions.
+func TestManagedCustomResourcesGauge(t *testing.T) {
+	ManagedCustomResources.Reset()
+	t.Cleanup(ManagedCustomResources.Reset)
+
+	ctx := context.Background()
+	core := &lightsoutv1alpha1.LightsOutScheduleCore{
+		CustomResources: []lightsoutv1alpha1.CustomResourceConfig{
+			{
+				Group: "postgresql.cnpg.io", Version: "v1", Kind: "Cluster",
+				SetFields: []lightsoutv1alpha1.FieldPatch{
+					{Path: "/spec/instances", Value: jsonValue(t, 0)},
+				},
+			},
+		},
+	}
+
+	clusters := []client.Object{
+		newCNPGCluster("primary", "apps"),
+		newCNPGCluster("replica", "apps"),
+	}
+	c := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).WithObjects(clusters...).Build()
+
+	customResourcesDown(ctx, c, nil, nil, core, "db-schedule", "db-schedule", []string{"apps"})
+	if got := testutil.ToFloat64(ManagedCustomResources.WithLabelValues("db-schedule", "Cluster")); got != 2 {
+		t.Errorf("after downscale: gauge = %v, want 2", got)
+	}
+
+	customResourcesUp(ctx, c, nil, nil, core, "db-schedule", "db-schedule", []string{"apps"}, time.Now())
+	if got := testutil.ToFloat64(ManagedCustomResources.WithLabelValues("db-schedule", "Cluster")); got != 2 {
+		t.Errorf("after upscale: gauge = %v, want 2", got)
+	}
+
+	// The series must survive a schedule that has not transitioned, which is the
+	// whole point of using a gauge rather than reading the counters.
+	if got := testutil.CollectAndCount(ManagedCustomResources); got != 1 {
+		t.Errorf("series count = %d, want 1", got)
+	}
+}
+
+// TestManagedCustomResourcesGauge_DeleteEntry checks the delete recipe, where the
+// resources are gone for the whole down window and the operator rebuilds them.
+func TestManagedCustomResourcesGauge_DeleteEntry(t *testing.T) {
+	ManagedCustomResources.Reset()
+	t.Cleanup(ManagedCustomResources.Reset)
+
+	podSet := &unstructured.Unstructured{}
+	podSet.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "core.strimzi.io", Version: "v1beta2", Kind: "StrimziPodSet",
+	})
+	podSet.SetName("kafka-brokers")
+	podSet.SetNamespace("apps")
+
+	c := fake.NewClientBuilder().WithScheme(runtime.NewScheme()).WithObjects(podSet).Build()
+	core := &lightsoutv1alpha1.LightsOutScheduleCore{
+		CustomResources: []lightsoutv1alpha1.CustomResourceConfig{
+			{Group: "core.strimzi.io", Version: "v1beta2", Kind: "StrimziPodSet", Delete: true},
+		},
+	}
+
+	customResourcesDown(context.Background(), c, nil, nil, core, "kafka", "kafka", []string{"apps"})
+	if got := testutil.ToFloat64(ManagedCustomResources.WithLabelValues("kafka", "StrimziPodSet")); got != 0 {
+		t.Errorf("after delete: gauge = %v, want 0", got)
+	}
+	// The kind is still reported, at zero, so a dashboard can name what the schedule
+	// manages while it is down.
+	if got := testutil.CollectAndCount(ManagedCustomResources); got != 1 {
+		t.Errorf("series count = %d, want 1", got)
+	}
+}
+
+// TestClearScheduleMetrics covers the series a deleted schedule would otherwise keep
+// publishing for the lifetime of the operator pod.
+func TestClearScheduleMetrics(t *testing.T) {
+	// The registry is global, so start from a known state rather than from whatever
+	// the tests before this one left behind.
+	reset := func() {
+		ScheduleState.Reset()
+		ManagedWorkloads.Reset()
+		ScaledWorkloads.Reset()
+		ManagedCustomResources.Reset()
+		StuckTerminatingPods.Reset()
+	}
+	reset()
+	t.Cleanup(reset)
+
+	ScheduleState.WithLabelValues("doomed").Set(1)
+	ScheduleState.WithLabelValues("survivor").Set(1)
+	ManagedWorkloads.WithLabelValues("doomed", "deployment").Set(4)
+	ScaledWorkloads.WithLabelValues("doomed", "deployment").Set(4)
+	ManagedCustomResources.WithLabelValues("doomed", "Cluster").Set(2)
+	StuckTerminatingPods.WithLabelValues("doomed", "apps").Set(1)
+
+	clearScheduleMetrics("doomed")
+
+	if got := testutil.CollectAndCount(ScheduleState); got != 1 {
+		t.Errorf("ScheduleState series = %d, want 1 (only the survivor)", got)
+	}
+	if got := testutil.ToFloat64(ScheduleState.WithLabelValues("survivor")); got != 1 {
+		t.Errorf("survivor = %v, want 1", got)
+	}
+	for name, vec := range map[string]*prometheus.GaugeVec{
+		"ManagedWorkloads":       ManagedWorkloads,
+		"ScaledWorkloads":        ScaledWorkloads,
+		"ManagedCustomResources": ManagedCustomResources,
+		"StuckTerminatingPods":   StuckTerminatingPods,
+	} {
+		if got := testutil.CollectAndCount(vec); got != 0 {
+			t.Errorf("%s series = %d after clear, want 0", name, got)
+		}
 	}
 }
