@@ -158,7 +158,7 @@ For the per-operator recipes, see [Custom resource integration](custom-resources
 
 `internal/controller/syncwave.go` orders the scaler by the `argocd.argoproj.io/sync-wave` annotation when `spec.argoCD.syncWaves` is set. It reads the annotation and writes nothing: the value belongs to ArgoCD, and a workload carrying none, or an unparseable one, is wave 0.
 
-The scaler walks the workloads in wave order, ascending on upscale and descending on downscale, and stops at the first boundary whose preceding wave has not settled. That early return is the one the rate limiter already uses, so the pass requeues and comes back 30 seconds later rather than blocking.
+The scaler walks the workloads in wave order: ascending on upscale, descending on downscale. It stops at the first boundary whose preceding wave has not settled. That early return is the one the rate limiter already uses, so the pass requeues and comes back 30 seconds later rather than blocking.
 
 A wave settles when every Deployment and StatefulSet in it reports all desired replicas ready, or on downscale no replicas at all. The check compares `status.observedGeneration` against the object generation first, because a workload patched moments ago still carries the status of the replica count it had before. CronJobs never hold a wave, and neither does a workload this schedule does not own.
 
@@ -256,9 +256,7 @@ The **validating webhook** rejects a schedule that carries:
 - A `customResources` entry that combines `delete` with `setFields` or `readyWhen`
 - A `customResources` entry that sets neither `setFields` nor `delete`, and so does nothing
 
-The pointer checks matter more than they look. The controller cannot report a bad
-pointer: it finds out at the first upscale, in a log line, hours after the schedule
-was applied.
+The pointer checks matter more than they look. The controller cannot report a bad pointer: it finds out at the first upscale, in a log line, hours after the schedule was applied.
 
 It warns, and still admits, when a schedule overlaps an existing one.
 
@@ -308,10 +306,6 @@ State 2 is the warming-up window. The schedule is on its way up, but not serving
 
 The `workload_type` label holds the kind. For a custom resource turned off through `spec.customResources`, that is the kind itself, such as `Cluster` or `RabbitmqCluster`. That is what separates custom resource operations from the `Deployment`, `StatefulSet` and `CronJob` ones. `lightsout_managed_workloads` counts only the three workload kinds.
 
-The counters only move at a transition, and they restart with the operator pod, so a
-dashboard built on `rate()` or `increase()` reads zero for a schedule that runs twice a
-day. Read them with `max_over_time` instead. The gauges carry the current answer and are
-written on every reconcile, so they report without waiting for a transition. A deleted
-schedule's series are dropped when its finalizer runs.
+The counters only move at a transition, and they restart with the operator pod. A dashboard built on `rate()` or `increase()` therefore reads zero for a schedule that runs twice a day. Read them with `max_over_time` instead. The gauges carry the current answer and are written on every reconcile, so they report without waiting for a transition. A deleted schedule's series are dropped when its finalizer runs.
 
 The dashboards in [examples/grafana](../examples/grafana) are built on these metrics.

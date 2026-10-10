@@ -72,7 +72,7 @@ type LightsOutScheduleReconciler struct {
 func (r *LightsOutScheduleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Fetch the schedule
+	// Get the schedule
 	var schedule lightsoutv1alpha1.LightsOutSchedule
 	if err := r.Get(ctx, req.NamespacedName, &schedule); err != nil {
 		if apierrors.IsNotFound(err) {
