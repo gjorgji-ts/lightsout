@@ -336,6 +336,35 @@ func TestValidateScheduleSpec_ArgoCDConfig(t *testing.T) {
 	}
 }
 
+func TestValidateScheduleCore_FluxCDConfig(t *testing.T) {
+	core := func(flux *lightsoutv1alpha1.FluxCDConfig) *lightsoutv1alpha1.LightsOutScheduleCore {
+		return &lightsoutv1alpha1.LightsOutScheduleCore{Upscale: "0 6 * * *", Downscale: "0 18 * * *", FluxCD: flux}
+	}
+
+	tests := []struct {
+		name    string
+		fluxCD  *lightsoutv1alpha1.FluxCDConfig
+		wantErr bool
+	}{
+		{"nil fluxCD config is valid", nil, false},
+		{"empty namespace defaults to flux-system (valid)", &lightsoutv1alpha1.FluxCDConfig{}, false},
+		{"valid custom namespace", &lightsoutv1alpha1.FluxCDConfig{Namespace: "flux-system"}, false},
+		{"invalid namespace name", &lightsoutv1alpha1.FluxCDConfig{Namespace: "INVALID_NS!"}, true},
+		{"positive warmup timeout", &lightsoutv1alpha1.FluxCDConfig{WarmupTimeout: &metav1.Duration{Duration: time.Minute}}, false},
+		{"zero warmup timeout", &lightsoutv1alpha1.FluxCDConfig{WarmupTimeout: &metav1.Duration{}}, true},
+		{"negative warmup timeout", &lightsoutv1alpha1.FluxCDConfig{WarmupTimeout: &metav1.Duration{Duration: -time.Minute}}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateScheduleCore(core(tt.fluxCD))
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateScheduleCore() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestSchedulesOverlap(t *testing.T) {
 	tests := []struct {
 		name    string

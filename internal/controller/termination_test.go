@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -271,7 +272,7 @@ func TestReconcile_ReportsStuckTerminatingPod(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dev"}}
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(1))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
 	}
 	// Deleted half an hour ago with a zero grace period: well past the slack.
 	pod := terminatingPod("web-abc", "dev", now, 30*time.Minute, 0)
@@ -350,7 +351,7 @@ func TestReconcile_FindsPodStuckAfterTheDownscale(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "dev"}}
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(1))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
 	}
 	// Still running. The workload controllers have not deleted it yet, which is
 	// exactly what the downscale reconcile sees.

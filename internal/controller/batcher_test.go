@@ -25,6 +25,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -104,19 +105,19 @@ func TestHasControllerOwner(t *testing.T) {
 		},
 		{
 			"explicitly non-controlling owner reference",
-			[]metav1.OwnerReference{{Kind: "Cluster", Name: "pg", Controller: ptr(false)}},
+			[]metav1.OwnerReference{{Kind: "Cluster", Name: "pg", Controller: ptr.To(false)}},
 			false,
 		},
 		{
 			"controller owner reference",
-			[]metav1.OwnerReference{{Kind: "Elasticsearch", Name: "es", Controller: ptr(true)}},
+			[]metav1.OwnerReference{{Kind: "Elasticsearch", Name: "es", Controller: ptr.To(true)}},
 			true,
 		},
 		{
 			"controller among several owner references",
 			[]metav1.OwnerReference{
 				{Kind: "Cluster", Name: "pg"},
-				{Kind: "Elasticsearch", Name: "es", Controller: ptr(true)},
+				{Kind: "Elasticsearch", Name: "es", Controller: ptr.To(true)},
 			},
 			true,
 		},
@@ -138,7 +139,7 @@ func operatorOwned() []metav1.OwnerReference {
 		APIVersion: "elasticsearch.k8s.elastic.co/v1",
 		Kind:       "Elasticsearch",
 		Name:       "es-cluster",
-		Controller: ptr(true),
+		Controller: ptr.To(true),
 	}}
 }
 
@@ -152,19 +153,19 @@ func TestCollectWorkloads_SkipsOperatorOwnedWorkloads(t *testing.T) {
 		WithObjects(
 			&appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "ns1"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 			},
 			&appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "owned-deploy", Namespace: "ns1", OwnerReferences: operatorOwned()},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(1))},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
 			},
 			&appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "owned-sts", Namespace: "ns1", OwnerReferences: operatorOwned()},
-				Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(3))},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
 			},
 			&batchv1.CronJob{
 				ObjectMeta: metav1.ObjectMeta{Name: "owned-cj", Namespace: "ns1", OwnerReferences: operatorOwned()},
-				Spec:       batchv1.CronJobSpec{Suspend: ptr(false)},
+				Spec:       batchv1.CronJobSpec{Suspend: ptr.To(false)},
 			},
 		).
 		Build()
@@ -207,12 +208,12 @@ func TestScaleWorkloads_StatsExcludeSkippedWorkloads(t *testing.T) {
 			// Scaled down by this run.
 			&appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "active", Namespace: "ns1"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 			},
 			// Parked at zero by a user: skipped, and not ours to report as scaled.
 			&appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "user-parked", Namespace: "ns1"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 			},
 			// Owned by another schedule: skipped, and not ours to report as scaled.
 			&appsv1.Deployment{
@@ -221,7 +222,7 @@ func TestScaleWorkloads_StatsExcludeSkippedWorkloads(t *testing.T) {
 					Namespace:   "ns1",
 					Annotations: map[string]string{constants.ManagedByAnnotation: "somebody-else"},
 				},
-				Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
+				Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
 			},
 			// Already down under this schedule: skipped, but still down, so counted.
 			&appsv1.Deployment{
@@ -233,7 +234,7 @@ func TestScaleWorkloads_StatsExcludeSkippedWorkloads(t *testing.T) {
 						constants.OriginalReplicasAnnotation: "4",
 					},
 				},
-				Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 			},
 		).
 		Build()
@@ -278,7 +279,7 @@ func TestScaleWorkloads_StatsClearOnUpscale(t *testing.T) {
 					constants.OriginalReplicasAnnotation: "5",
 				},
 			},
-			Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+			Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 		}).
 		Build()
 
@@ -312,7 +313,7 @@ func TestCollectNamespaceDeployments_StaleCopyTransfersOwnership(t *testing.T) {
 			Namespace: "dev",
 			Labels:    map[string]string{constants.ManagedByLabel: "global-schedule"},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
 	ctx := context.Background()

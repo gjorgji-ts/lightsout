@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -558,7 +559,7 @@ func TestHandleFluxCDWarmup_CompletesWhenPodsReady(t *testing.T) {
 	// All deployments in "dev" namespace are ready
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
 		Status:     appsv1.DeploymentStatus{ReadyReplicas: 2},
 	}
 
@@ -602,7 +603,7 @@ func TestHandleFluxCDWarmup_CompletesOnTimeout(t *testing.T) {
 	// Deployment not yet ready but timeout should override
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
 		Status:     appsv1.DeploymentStatus{ReadyReplicas: 0},
 	}
 
@@ -708,7 +709,7 @@ func TestHandleFluxCDWarmup_CoLocatedUsesOwnNamespace(t *testing.T) {
 	// Deployment in "team-a" is ready
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(1))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
 		Status:     appsv1.DeploymentStatus{ReadyReplicas: 1},
 	}
 

@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	lightsoutv1alpha1 "github.com/gjorgji-ts/lightsout/api/v1alpha1"
@@ -126,11 +127,7 @@ func workloadSettled(w Workload, scaleUp bool) bool {
 		if !scaleUp {
 			return d.Status.Replicas == 0
 		}
-		desired := int32(1)
-		if d.Spec.Replicas != nil {
-			desired = *d.Spec.Replicas
-		}
-		return d.Status.ReadyReplicas >= desired
+		return d.Status.ReadyReplicas >= ptr.Deref(d.Spec.Replicas, 1)
 	case WorkloadTypeStatefulSet:
 		s := w.StatefulSet
 		if s.Status.ObservedGeneration < s.Generation {
@@ -139,11 +136,7 @@ func workloadSettled(w Workload, scaleUp bool) bool {
 		if !scaleUp {
 			return s.Status.Replicas == 0
 		}
-		desired := int32(1)
-		if s.Spec.Replicas != nil {
-			desired = *s.Spec.Replicas
-		}
-		return s.Status.ReadyReplicas >= desired
+		return s.Status.ReadyReplicas >= ptr.Deref(s.Spec.Replicas, 1)
 	}
 	return true
 }
