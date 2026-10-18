@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -229,10 +230,7 @@ func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace stri
 		return false, false, err
 	}
 	for _, d := range deployments.Items {
-		desired := int32(1)
-		if d.Spec.Replicas != nil {
-			desired = *d.Spec.Replicas
-		}
+		desired := ptr.Deref(d.Spec.Replicas, 1)
 		if desired == 0 {
 			continue
 		}
@@ -247,10 +245,7 @@ func CheckWorkloadReadiness(ctx context.Context, c client.Client, namespace stri
 		return false, false, err
 	}
 	for _, s := range statefulsets.Items {
-		desired := int32(1)
-		if s.Spec.Replicas != nil {
-			desired = *s.Spec.Replicas
-		}
+		desired := ptr.Deref(s.Spec.Replicas, 1)
 		if desired == 0 {
 			continue
 		}

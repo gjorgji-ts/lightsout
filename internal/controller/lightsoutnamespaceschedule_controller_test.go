@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -46,7 +47,7 @@ func TestNamespaceScheduleReconcile_ScalesDown(t *testing.T) {
 	ns := testNS
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: ns},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	schedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-schedule", Namespace: ns},
@@ -105,11 +106,11 @@ func TestNamespaceScheduleReconcile_OnlyManagesOwnNamespace(t *testing.T) {
 
 	deployInOwner := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "app-a", Namespace: testNS},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
 	}
 	deployInOther := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "app-b", Namespace: "team-b"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
 	}
 	schedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "schedule", Namespace: testNS},
@@ -172,7 +173,7 @@ func TestNamespaceScheduleReconcile_Suspended(t *testing.T) {
 	ns := testNS
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: ns},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	schedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-schedule", Namespace: ns},
@@ -238,7 +239,7 @@ func TestNamespaceScheduleReconcile_ClaimsGloballyOwnedWorkload(t *testing.T) {
 				"lightsout.techsupport.mk/managed-by": "global-schedule",
 			},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 	schedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-schedule", Namespace: ns},

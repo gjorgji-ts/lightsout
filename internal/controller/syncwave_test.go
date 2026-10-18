@@ -25,6 +25,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -36,7 +37,7 @@ import (
 func waved(name, namespace, wave string, replicas int32) *appsv1.Deployment {
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(replicas)},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(replicas)},
 	}
 	if wave != "" {
 		deploy.Annotations = map[string]string{constants.ArgoCDSyncWaveAnnotation: wave}
@@ -189,7 +190,7 @@ func TestWorkloadSettled(t *testing.T) {
 	deployment := func(generation, observed int64, desired, ready, current int32) Workload {
 		return WorkloadFromDeployment(&appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "ns1", Generation: generation},
-			Spec:       appsv1.DeploymentSpec{Replicas: ptr(desired)},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(desired)},
 			Status: appsv1.DeploymentStatus{
 				ObservedGeneration: observed,
 				ReadyReplicas:      ready,
@@ -215,7 +216,7 @@ func TestWorkloadSettled(t *testing.T) {
 			"statefulset up: ready",
 			WorkloadFromStatefulSet(&appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns1", Generation: 1},
-				Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(2))},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
 				Status:     appsv1.StatefulSetStatus{ObservedGeneration: 1, ReadyReplicas: 2},
 			}),
 			true, true,
@@ -224,7 +225,7 @@ func TestWorkloadSettled(t *testing.T) {
 			"statefulset down: one pod left",
 			WorkloadFromStatefulSet(&appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "ns1", Generation: 2},
-				Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 				Status:     appsv1.StatefulSetStatus{ObservedGeneration: 2, Replicas: 1},
 			}),
 			false, false,
@@ -282,12 +283,12 @@ func TestWaveGate(t *testing.T) {
 
 	unsettled := []Workload{WorkloadFromDeployment(&appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "ns1", Generation: 2},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		Status:     appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 0, Replicas: 3},
 	})}
 	settled := []Workload{WorkloadFromDeployment(&appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "ns1", Generation: 2},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		Status:     appsv1.DeploymentStatus{ObservedGeneration: 2, ReadyReplicas: 3, Replicas: 3},
 	})}
 

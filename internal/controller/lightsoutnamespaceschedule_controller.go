@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -344,99 +343,13 @@ func (r *LightsOutNamespaceScheduleReconciler) handleDeletion(ctx context.Contex
 	logger := log.FromContext(ctx)
 	logger.Info("handling deletion, restoring managed workloads")
 
-	var restoreErrors []string
-	ns := schedule.Namespace
-
-	hpaList, hpaErr := listHPAs(ctx, r.Client, ns)
-	if hpaErr != nil {
-		logger.Error(hpaErr, "failed to list HPAs during deletion, HPA restore skipped", "namespace", ns)
+	now := time.Now()
+	if r.TimeFunc != nil {
+		now = r.TimeFunc()
 	}
 
-	// Restore Deployments
-	deployments, err := listManagedDeployments(ctx, r.Client, ns, schedule.Name)
-	if err != nil {
-		restoreErrors = append(restoreErrors, fmt.Sprintf("list deployments in %s: %v", ns, err))
-	} else {
-		for i := range deployments {
-			result, err := ScaleDeployment(ctx, r.Client, &deployments[i], schedule.Name, true, hpaList)
-			if err != nil {
-				restoreErrors = append(restoreErrors, fmt.Sprintf("deployment %s/%s: %v", ns, deployments[i].Name, err))
-			} else {
-				recordWorkloadEvent(r.Recorder, WorkloadFromDeployment(&deployments[i]), schedule.Name, "namespace schedule", true, result)
-			}
-		}
-	}
-
-	// Restore StatefulSets
-	statefulsets, err := listManagedStatefulSets(ctx, r.Client, ns, schedule.Name)
-	if err != nil {
-		restoreErrors = append(restoreErrors, fmt.Sprintf("list statefulsets in %s: %v", ns, err))
-	} else {
-		for i := range statefulsets {
-			result, err := ScaleStatefulSet(ctx, r.Client, &statefulsets[i], schedule.Name, true, hpaList)
-			if err != nil {
-				restoreErrors = append(restoreErrors, fmt.Sprintf("statefulset %s/%s: %v", ns, statefulsets[i].Name, err))
-			} else {
-				recordWorkloadEvent(r.Recorder, WorkloadFromStatefulSet(&statefulsets[i]), schedule.Name, "namespace schedule", true, result)
-			}
-		}
-	}
-
-	// Restore CronJobs
-	cronjobs, err := listManagedCronJobs(ctx, r.Client, ns, schedule.Name)
-	if err != nil {
-		restoreErrors = append(restoreErrors, fmt.Sprintf("list cronjobs in %s: %v", ns, err))
-	} else {
-		for i := range cronjobs {
-			result, err := ScaleCronJob(ctx, r.Client, &cronjobs[i], schedule.Name, true)
-			if err != nil {
-				restoreErrors = append(restoreErrors, fmt.Sprintf("cronjob %s/%s: %v", ns, cronjobs[i].Name, err))
-			} else {
-				recordWorkloadEvent(r.Recorder, WorkloadFromCronJob(&cronjobs[i]), schedule.Name, "namespace schedule", true, result)
-			}
-		}
-	}
-
-	// Cleanup ArgoCD Application labels
-	if schedule.Spec.ArgoCD != nil {
-		namespaces := []string{ns}
-		apps, err := DiscoverArgoCDApps(ctx, r.Client, schedule.Spec.ArgoCD, namespaces)
-		if err != nil {
-			logger.Error(err, "failed to discover ArgoCD apps during cleanup")
-		} else {
-			for i := range apps {
-				if _, err := RemoveArgoCDAppLabels(ctx, r.Client, &apps[i], schedule.Name); err != nil {
-					logger.Error(err, "failed to remove labels from ArgoCD app during cleanup", "app", apps[i].GetName())
-				}
-			}
-		}
-	}
-
-	// Cleanup FluxCD Kustomization and HelmRelease suspensions
-	if schedule.Spec.FluxCD != nil {
-		resources, err := DiscoverFluxResources(ctx, r.Client, schedule.Spec.FluxCD, []string{ns})
-		if err != nil {
-			logger.Error(err, "failed to discover Flux resources during cleanup")
-		} else {
-			for i := range resources {
-				if _, err := ResumeFluxResource(ctx, r.Client, &resources[i], schedule.Name); err != nil {
-					logger.Error(err, "failed to resume Flux resource during cleanup", "resource", resources[i].GetName())
-				}
-			}
-		}
-	}
-
-	// Restore custom resources this schedule turned off. Resources removed by a
-	// `delete` entry are not restored here: rebuilding them is their operator's job
-	// once the paused entry alongside them is restored.
-	if len(schedule.Spec.CustomResources) > 0 {
-		now := time.Now()
-		if r.TimeFunc != nil {
-			now = r.TimeFunc()
-		}
-		restoreErrors = append(restoreErrors,
-			restoreAllCustomResources(ctx, r.Client, &schedule.Spec.LightsOutScheduleCore, schedule.Name, []string{ns}, now)...)
-	}
+	// Restore every workload and integration resource this schedule owns.
+	restoreErrors := restoreManagedWorkloads(ctx, r.Client, r.Recorder, &schedule.Spec.LightsOutScheduleCore, schedule.Name, "namespace schedule", []string{schedule.Namespace}, now)
 
 	// Record events based on cleanup result
 	if len(restoreErrors) > 0 {

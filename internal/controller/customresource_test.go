@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -341,7 +342,7 @@ func TestHandleCustomResourceWarmup(t *testing.T) {
 		})
 		sts := &appsv1.StatefulSet{
 			ObjectMeta: metav1.ObjectMeta{Name: "pg", Namespace: "apps"},
-			Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(3))},
+			Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
 			Status:     appsv1.StatefulSetStatus{ReadyReplicas: readyReplicas},
 		}
 		return cluster, sts
@@ -569,7 +570,7 @@ func TestReconcile_DefersWorkloadScaleUpUntilCustomResourcesReady(t *testing.T) 
 				constants.OriginalReplicasAnnotation: "2",
 			},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 
 	// The database the operator manages: three desired replicas, none ready yet.
@@ -579,7 +580,7 @@ func TestReconcile_DefersWorkloadScaleUpUntilCustomResourcesReady(t *testing.T) 
 			Namespace:       "apps",
 			OwnerReferences: operatorOwned(),
 		},
-		Spec:   appsv1.StatefulSetSpec{Replicas: ptr(int32(3))},
+		Spec:   appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
 		Status: appsv1.StatefulSetStatus{ReadyReplicas: 0},
 	}
 

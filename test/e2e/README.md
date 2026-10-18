@@ -7,9 +7,7 @@ Two suites live here, split by build tag.
 | Core behaviour | `e2e` | `make test-e2e` |
 | Operator integration | `e2e operators` | `make test-e2e-operator OPERATOR=<key>` |
 
-`OPERATOR` selects a case in the second suite, and only there. `make test-e2e` ignores
-it and runs the core suite, so the target rejects the argument rather than running the
-wrong suite for 18 minutes.
+`OPERATOR` selects a case in the second suite, and only there. `make test-e2e` ignores it and runs the core suite, so the target rejects the argument rather than running the wrong suite for 18 minutes.
 
 Both share `e2e_suite_test.go`. It builds the manager image, loads it into Kind, installs cert-manager and the CRDs, and deploys the controller.
 
@@ -59,19 +57,11 @@ Each case also creates the ClusterRole for that operator's API group. It is the 
 
 ### The readyWhen case
 
-`starrocks` is the only case that exercises `readyWhen`. StarRocks publishes neither a
-Ready condition nor `status.observedGeneration`, which is the situation the field exists
-for, and its `status.phase` reaches `running` once the cluster serves.
+`starrocks` is the only case that exercises `readyWhen`. StarRocks publishes neither a Ready condition nor `status.observedGeneration`, which is the situation the field exists for, and its `status.phase` reaches `running` once the cluster serves.
 
-The case asserts more than a release. It records `status.phase` on the same poll that
-sees the resource released, and requires it to read `running`. Without that, the case
-would prove nothing: a gate that ignored `readyWhen` would still release on
-`customResourceWarmupTimeout`, well inside the window the release assertion allows.
+The case asserts more than a release. It records `status.phase` on the same poll that sees the resource released, and requires it to read `running`. Without that, the case would prove nothing: a gate that ignored `readyWhen` would still release on `customResourceWarmupTimeout`, well inside the window the release assertion allows.
 
-The same case therefore runs with a 15 minute warmup timeout rather than the 5 minutes
-every other case uses. The timeout starts when the resource enters warming-up, before
-the operator has rebuilt anything, so a short bound would open the gate on the clock and
-fail the assertion for the wrong reason.
+The same case therefore runs with a 15 minute warmup timeout rather than the 5 minutes every other case uses. The timeout starts when the resource enters warming-up, before the operator has rebuilt anything. A short bound would open the gate on the clock, and fail the assertion for the wrong reason.
 
 ### Pod existence versus readiness
 
@@ -106,7 +96,7 @@ With `OPERATOR=all` the cases continue after one fails, so a single broken recip
 Case times vary with machine load and with what the image cache holds. `redis` finishes in about a minute. `strimzi` and the two StarRocks cases take several. A first pull of a multi-GB image takes longer still.
 
 > [!NOTE]
-> The Kind cluster is reused between runs and is never torn down automatically. Remove it with `make cleanup-test-e2e`.
+> The Kind cluster is reused between runs and is never torn down automatically. Delete it with `make cleanup-test-e2e`.
 
 ### Keeping runtime down
 

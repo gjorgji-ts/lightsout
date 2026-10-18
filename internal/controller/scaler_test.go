@@ -26,15 +26,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/gjorgji-ts/lightsout/internal/constants"
 )
-
-func ptr[T any](v T) *T {
-	return &v
-}
 
 func TestScaleDeployment_Downscale(t *testing.T) {
 	scheme := runtime.NewScheme()
@@ -53,7 +50,7 @@ func TestScaleDeployment_Downscale(t *testing.T) {
 			name: "scale down deployment with 3 replicas",
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 			},
 			scheduleName:   "dev-schedule",
 			wantReplicas:   0,
@@ -74,7 +71,7 @@ func TestScaleDeployment_Downscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 0,
@@ -84,7 +81,7 @@ func TestScaleDeployment_Downscale(t *testing.T) {
 			name: "skip deployment with 0 replicas (user-managed)",
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 0,
@@ -100,7 +97,7 @@ func TestScaleDeployment_Downscale(t *testing.T) {
 						constants.ManagedByAnnotation: "other-schedule",
 					},
 				},
-				Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+				Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 3,
@@ -165,7 +162,7 @@ func TestScaleStatefulSet_Downscale(t *testing.T) {
 			name: "scale down statefulset with 3 replicas",
 			statefulset: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "dev"},
-				Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(3))},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
 			},
 			scheduleName:   "dev-schedule",
 			wantReplicas:   0,
@@ -186,7 +183,7 @@ func TestScaleStatefulSet_Downscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 0,
@@ -196,7 +193,7 @@ func TestScaleStatefulSet_Downscale(t *testing.T) {
 			name: "skip statefulset with 0 replicas (user-managed)",
 			statefulset: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "dev"},
-				Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 0,
@@ -212,7 +209,7 @@ func TestScaleStatefulSet_Downscale(t *testing.T) {
 						constants.ManagedByAnnotation: "other-schedule",
 					},
 				},
-				Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(3))},
+				Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(3))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 3,
@@ -285,7 +282,7 @@ func TestScaleStatefulSet_Upscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 3,
@@ -294,7 +291,7 @@ func TestScaleStatefulSet_Upscale(t *testing.T) {
 			name: "skip statefulset without annotation (not managed by us)",
 			statefulset: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "dev"},
-				Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 0,
@@ -314,7 +311,7 @@ func TestScaleStatefulSet_Upscale(t *testing.T) {
 						constants.ManagedByLabel: "other-schedule",
 					},
 				},
-				Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 0,
@@ -334,7 +331,7 @@ func TestScaleStatefulSet_Upscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 1,
@@ -403,7 +400,7 @@ func TestScaleDeployment_Upscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 3,
@@ -412,7 +409,7 @@ func TestScaleDeployment_Upscale(t *testing.T) {
 			name: "skip deployment without annotation (not managed by us)",
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 0,
@@ -432,7 +429,7 @@ func TestScaleDeployment_Upscale(t *testing.T) {
 						constants.ManagedByLabel: "other-schedule",
 					},
 				},
-				Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 0,
@@ -452,7 +449,7 @@ func TestScaleDeployment_Upscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+				Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 			},
 			scheduleName: "dev-schedule",
 			wantReplicas: 1,
@@ -513,7 +510,7 @@ func TestScaleCronJob_Downscale(t *testing.T) {
 			name: "suspend active cronjob",
 			cronjob: &batchv1.CronJob{
 				ObjectMeta: metav1.ObjectMeta{Name: "backup", Namespace: "dev"},
-				Spec:       batchv1.CronJobSpec{Suspend: ptr(false)},
+				Spec:       batchv1.CronJobSpec{Suspend: ptr.To(false)},
 			},
 			scheduleName:   "dev-schedule",
 			wantSuspend:    true,
@@ -524,7 +521,7 @@ func TestScaleCronJob_Downscale(t *testing.T) {
 			name: "skip already suspended cronjob (user-managed)",
 			cronjob: &batchv1.CronJob{
 				ObjectMeta: metav1.ObjectMeta{Name: "backup", Namespace: "dev"},
-				Spec:       batchv1.CronJobSpec{Suspend: ptr(true)},
+				Spec:       batchv1.CronJobSpec{Suspend: ptr.To(true)},
 			},
 			scheduleName: "dev-schedule",
 			wantSuspend:  true,
@@ -544,7 +541,7 @@ func TestScaleCronJob_Downscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: batchv1.CronJobSpec{Suspend: ptr(true)},
+				Spec: batchv1.CronJobSpec{Suspend: ptr.To(true)},
 			},
 			scheduleName: "dev-schedule",
 			wantSuspend:  true,
@@ -617,7 +614,7 @@ func TestScaleCronJob_Upscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: batchv1.CronJobSpec{Suspend: ptr(true)},
+				Spec: batchv1.CronJobSpec{Suspend: ptr.To(true)},
 			},
 			scheduleName: "dev-schedule",
 			wantSuspend:  false,
@@ -636,7 +633,7 @@ func TestScaleCronJob_Upscale(t *testing.T) {
 						constants.ManagedByLabel: "dev-schedule",
 					},
 				},
-				Spec: batchv1.CronJobSpec{Suspend: ptr(true)},
+				Spec: batchv1.CronJobSpec{Suspend: ptr.To(true)},
 			},
 			scheduleName: "dev-schedule",
 			wantSuspend:  true,
@@ -646,7 +643,7 @@ func TestScaleCronJob_Upscale(t *testing.T) {
 			name: "mark suspended cronjob without annotation as user-owned",
 			cronjob: &batchv1.CronJob{
 				ObjectMeta: metav1.ObjectMeta{Name: "backup", Namespace: "dev"},
-				Spec:       batchv1.CronJobSpec{Suspend: ptr(true)},
+				Spec:       batchv1.CronJobSpec{Suspend: ptr.To(true)},
 			},
 			scheduleName: "dev-schedule",
 			wantSuspend:  true,
@@ -691,7 +688,7 @@ func TestScaleCronJob_Upscale(t *testing.T) {
 func TestScaleDeploymentDown_WithHPA(t *testing.T) {
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-deploy", Namespace: "ns"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	hpa := makeHPA("Deployment", "my-deploy", minReplicasPtr(2), nil)
 
@@ -743,7 +740,7 @@ func TestScaleDeploymentUp_WithHPA(t *testing.T) {
 			},
 			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 	// HPA in post-downscale state: scaleUp disabled, minReplicas unchanged at 2
 	hpa := makeHPA("Deployment", "my-deploy", minReplicasPtr(2), map[string]string{
@@ -791,7 +788,7 @@ func TestScaleDeploymentUp_WithHPA(t *testing.T) {
 func TestScaleStatefulSetDown_WithHPA(t *testing.T) {
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-sts", Namespace: "ns"},
-		Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(2))},
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
 	}
 	hpa := makeHPA("StatefulSet", "my-sts", minReplicasPtr(2), nil)
 
@@ -834,7 +831,7 @@ func TestScaleStatefulSetUp_WithHPA(t *testing.T) {
 			},
 			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
 		},
-		Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 	}
 	// HPA in post-downscale state: scaleUp disabled, minReplicas unchanged at 2
 	hpa := makeHPA("StatefulSet", "my-sts", minReplicasPtr(2), map[string]string{
@@ -879,7 +876,7 @@ func TestScaleDeploymentUp_HPACrashWindowRecovery(t *testing.T) {
 	// but HPA still has dangling annotations from the interrupted upscale.
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-deploy", Namespace: "ns"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	hpa := makeHPA("Deployment", "my-deploy", minReplicasPtr(2), map[string]string{
 		constants.ManagedByAnnotation:                "my-schedule",
@@ -929,7 +926,7 @@ func TestScaleDeployment_StaleCopyStillScales(t *testing.T) {
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "owned-app", Namespace: "ns"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
 	ctx := context.Background()
@@ -1002,7 +999,7 @@ func TestScaleDeploymentUp_StaleCopyClearsMetadata(t *testing.T) {
 			},
 			Labels: map[string]string{constants.ManagedByLabel: "dev-schedule"},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
 	ctx := context.Background()

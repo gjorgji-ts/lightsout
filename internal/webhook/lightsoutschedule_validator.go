@@ -238,7 +238,7 @@ func IsEmptyLabelSelector(selector *metav1.LabelSelector) bool {
 }
 
 // ValidateScheduleCore validates the fields shared between LightsOutSchedule and
-// LightsOutNamespaceSchedule (cron expressions, timezone, rate limits, ArgoCD config).
+// LightsOutNamespaceSchedule (cron expressions, timezone, rate limits, ArgoCD and FluxCD config).
 // It does NOT check namespace-selection fields, which are global-schedule-only concerns.
 func ValidateScheduleCore(core *lightsoutv1alpha1.LightsOutScheduleCore) error {
 	var allErrs field.ErrorList
@@ -276,25 +276,12 @@ func ValidateScheduleCore(core *lightsoutv1alpha1.LightsOutScheduleCore) error {
 	allErrs = append(allErrs, ValidateRateLimit(core.UpscaleRateLimit, "upscaleRateLimit")...)
 	allErrs = append(allErrs, ValidateRateLimit(core.DownscaleRateLimit, "downscaleRateLimit")...)
 
-	// Validate ArgoCD config
+	// Validate ArgoCD and FluxCD config. Both carry the same two fields.
 	if core.ArgoCD != nil {
-		if core.ArgoCD.Namespace != "" {
-			errs := validation.IsDNS1123Label(core.ArgoCD.Namespace)
-			if len(errs) > 0 {
-				allErrs = append(allErrs, field.Invalid(
-					field.NewPath("spec", "argoCD", "namespace"),
-					core.ArgoCD.Namespace,
-					fmt.Sprintf("invalid namespace name: %s", strings.Join(errs, ", ")),
-				))
-			}
-		}
-		if core.ArgoCD.WarmupTimeout != nil && core.ArgoCD.WarmupTimeout.Duration <= 0 {
-			allErrs = append(allErrs, field.Invalid(
-				field.NewPath("spec", "argoCD", "warmupTimeout"),
-				core.ArgoCD.WarmupTimeout.Duration,
-				"must be positive",
-			))
-		}
+		allErrs = append(allErrs, validateIntegration("argoCD", core.ArgoCD.Namespace, core.ArgoCD.WarmupTimeout)...)
+	}
+	if core.FluxCD != nil {
+		allErrs = append(allErrs, validateIntegration("fluxCD", core.FluxCD.Namespace, core.FluxCD.WarmupTimeout)...)
 	}
 
 	// Validate custom resource config
@@ -448,4 +435,27 @@ func ValidateRateLimit(rateLimit *lightsoutv1alpha1.RateLimitConfig, fieldPath s
 	}
 
 	return errs
+}
+
+// validateIntegration checks the namespace and warmupTimeout fields that the ArgoCD and
+// FluxCD configs share. An empty namespace is valid: the CRD default fills it in.
+func validateIntegration(fieldName, namespace string, warmupTimeout *metav1.Duration) field.ErrorList {
+	var allErrs field.ErrorList
+	if namespace != "" {
+		if errs := validation.IsDNS1123Label(namespace); len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(
+				field.NewPath("spec", fieldName, "namespace"),
+				namespace,
+				fmt.Sprintf("invalid namespace name: %s", strings.Join(errs, ", ")),
+			))
+		}
+	}
+	if warmupTimeout != nil && warmupTimeout.Duration <= 0 {
+		allErrs = append(allErrs, field.Invalid(
+			field.NewPath("spec", fieldName, "warmupTimeout"),
+			warmupTimeout.Duration,
+			"must be positive",
+		))
+	}
+	return allErrs
 }

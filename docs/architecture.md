@@ -250,8 +250,8 @@ The **validating webhook** rejects a schedule that carries:
 - An invalid cron expression in `upscale` or `downscale`
 - A timezone that is not a recognised IANA name
 - A rate limit with a batch size below 1, or a negative delay
-- An ArgoCD namespace that is not a valid DNS label
-- An `argoCD.warmupTimeout`, or a `customResourceWarmupTimeout`, of zero or less
+- An ArgoCD or FluxCD namespace that is not a valid DNS label
+- An `argoCD.warmupTimeout`, `fluxCD.warmupTimeout` or `customResourceWarmupTimeout` of zero or less
 - A malformed JSON Pointer, or a missing value, in a `setFields` or `readyWhen` entry
 - A `customResources` entry that combines `delete` with `setFields` or `readyWhen`
 - A `customResources` entry that sets neither `setFields` nor `delete`, and so does nothing

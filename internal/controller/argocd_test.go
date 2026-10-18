@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -418,7 +419,7 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 			deployments: []appsv1.Deployment{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-					Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+					Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 					Status:     appsv1.DeploymentStatus{ReadyReplicas: 3},
 				},
 			},
@@ -430,7 +431,7 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 			deployments: []appsv1.Deployment{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-					Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+					Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 					Status:     appsv1.DeploymentStatus{ReadyReplicas: 1},
 				},
 			},
@@ -442,7 +443,7 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 			deployments: []appsv1.Deployment{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-					Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+					Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 					Status:     appsv1.DeploymentStatus{ReadyReplicas: 0},
 				},
 			},
@@ -454,7 +455,7 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 			statefulsets: []appsv1.StatefulSet{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "dev"},
-					Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(2))},
+					Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
 					Status:     appsv1.StatefulSetStatus{ReadyReplicas: 2},
 				},
 			},
@@ -466,7 +467,7 @@ func TestCheckWorkloadReadiness(t *testing.T) {
 			statefulsets: []appsv1.StatefulSet{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "dev"},
-					Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(2))},
+					Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
 					Status:     appsv1.StatefulSetStatus{ReadyReplicas: 0},
 				},
 			},
@@ -633,7 +634,7 @@ func ownedPod(name, ownerKind string, ready corev1.ConditionStatus) corev1.Pod {
 			Kind:       ownerKind,
 			Name:       "owner",
 			UID:        "owner-uid",
-			Controller: ptr(true),
+			Controller: ptr.To(true),
 		}}
 	}
 	return pod

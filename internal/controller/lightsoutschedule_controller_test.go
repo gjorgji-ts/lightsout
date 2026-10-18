@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -62,7 +63,7 @@ func TestReconcile_WithRateLimiting(t *testing.T) {
 	for i := range 5 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "test-ns"},
-			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		}
 		objects = append(objects, deploy)
 	}
@@ -157,7 +158,7 @@ func TestReconcile_ReleasesOrphanedNamespace(t *testing.T) {
 				constants.OriginalReplicasAnnotation: "1",
 			},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 
 	schedule := &lightsoutv1alpha1.LightsOutSchedule{
@@ -221,15 +222,15 @@ func TestCollectWorkloads(t *testing.T) {
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "deploy1", Namespace: "ns1"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "sts1", Namespace: "ns1"},
-		Spec:       appsv1.StatefulSetSpec{Replicas: ptr(int32(2))},
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
 	}
 	cj := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{Name: "cj1", Namespace: "ns1"},
-		Spec:       batchv1.CronJobSpec{Suspend: ptr(false)},
+		Spec:       batchv1.CronJobSpec{Suspend: ptr.To(false)},
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -264,7 +265,7 @@ func TestScaleWorkloads_BatchLimitReached(t *testing.T) {
 	for i := range 5 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "ns1"},
-			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		}
 		objects = append(objects, deploy)
 	}
@@ -321,7 +322,7 @@ func TestScaleWorkloads_SkippedDontConsumeBudget(t *testing.T) {
 				constants.ManagedByAnnotation:        "test-schedule",
 			},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 	alreadyScaled2 := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -331,11 +332,11 @@ func TestScaleWorkloads_SkippedDontConsumeBudget(t *testing.T) {
 				constants.ManagedByAnnotation:        "test-schedule",
 			},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 	active := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "zzz-deploy-active", Namespace: "ns1"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(5))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(5))},
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -388,7 +389,7 @@ func TestScaleWorkloads_NoRateLimitProcessesAll(t *testing.T) {
 	for i := range 10 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "ns1"},
-			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		}
 		objects = append(objects, deploy)
 	}
@@ -437,7 +438,7 @@ func TestReconcile_RequeueDelayIsMinOfBatchDelayAndTransition(t *testing.T) {
 	for i := range 5 {
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("deploy-%d", i), Namespace: "test-ns-requeue"},
-			Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+			Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		}
 		objects = append(objects, deploy)
 	}
@@ -515,7 +516,7 @@ func TestReconcile_ArgoCDDownscale(t *testing.T) {
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 
 	// Create ArgoCD Application targeting the "dev" namespace
@@ -634,7 +635,7 @@ func TestReconcile_ArgoCDUpscale(t *testing.T) {
 				constants.ManagedByLabel: "dev-schedule",
 			},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 
 	// ArgoCD app already labeled as down
@@ -731,7 +732,7 @@ func TestReconcile_ArgoCDWarmupComplete(t *testing.T) {
 	// Deployment: already scaled up by a previous reconcile with replicas ready
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		Status:     appsv1.DeploymentStatus{ReadyReplicas: 3},
 	}
 
@@ -843,7 +844,7 @@ func TestReconcile_ArgoCDWarmupTimeout(t *testing.T) {
 				constants.ManagedByAnnotation: "dev-schedule",
 			},
 		},
-		Spec:   appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:   appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		Status: appsv1.DeploymentStatus{ReadyReplicas: 0},
 	}
 
@@ -934,7 +935,7 @@ func TestReconcile_ArgoCDWarmupRequeue(t *testing.T) {
 				constants.ManagedByAnnotation: "dev-schedule",
 			},
 		},
-		Spec:   appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:   appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 		Status: appsv1.DeploymentStatus{ReadyReplicas: 0},
 	}
 
@@ -1012,7 +1013,7 @@ func TestReconcile_ArgoCDDownscaleDuringWarmup(t *testing.T) {
 	// Deployment with 3 replicas (just became "up" but we're now downscaling again)
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 
 	// ArgoCD app still in warming-up state
@@ -1091,7 +1092,7 @@ func TestReconcile_ArgoCDDisabled(t *testing.T) {
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 
 	argoApp := newArgoCDApp("dev-app", "dev", nil)
@@ -3534,11 +3535,11 @@ func TestScaleWorkloads_EmitsWorkloadEvents(t *testing.T) {
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "deploy-1", Namespace: "ns1"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 	cj := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{Name: "cj-1", Namespace: "ns1"},
-		Spec:       batchv1.CronJobSpec{Suspend: ptr(false)},
+		Spec:       batchv1.CronJobSpec{Suspend: ptr.To(false)},
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -3602,7 +3603,7 @@ func TestHandleDeletion_EmitsWorkloadEvents(t *testing.T) {
 			},
 			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 
 	sts := &appsv1.StatefulSet{
@@ -3615,7 +3616,7 @@ func TestHandleDeletion_EmitsWorkloadEvents(t *testing.T) {
 			},
 			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
 		},
-		Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.StatefulSetSpec{Replicas: ptr.To(int32(0))},
 	}
 
 	// A cronjob already suspended by this schedule
@@ -3629,7 +3630,7 @@ func TestHandleDeletion_EmitsWorkloadEvents(t *testing.T) {
 			},
 			Labels: map[string]string{constants.ManagedByLabel: "my-schedule"},
 		},
-		Spec: batchv1.CronJobSpec{Suspend: ptr(true)},
+		Spec: batchv1.CronJobSpec{Suspend: ptr.To(true)},
 	}
 
 	now := metav1.Now()
@@ -3710,7 +3711,7 @@ func TestReconcile_SkipsNamespacesWithLocalSchedules(t *testing.T) {
 	nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b", Labels: map[string]string{"env": "dev"}}}
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team-a"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(2))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
 	}
 	localSchedule := &lightsoutv1alpha1.LightsOutNamespaceSchedule{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-schedule", Namespace: "team-a"},
@@ -3782,7 +3783,7 @@ func TestReconcile_FluxCDDownscale(t *testing.T) {
 	}
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "dev"},
-		Spec:       appsv1.DeploymentSpec{Replicas: ptr(int32(3))},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
 	}
 
 	// Kustomization in flux-system targeting "dev" should be suspended
@@ -3902,7 +3903,7 @@ func TestReconcile_FluxCDUpscale(t *testing.T) {
 				constants.ManagedByLabel: devScheduleName,
 			},
 		},
-		Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+		Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 	}
 
 	// Kustomization already suspended with state=down
@@ -4013,7 +4014,7 @@ func TestReconcile_WarmupWaitsForEveryWorkload(t *testing.T) {
 				},
 				Labels: map[string]string{constants.ManagedByLabel: devScheduleName},
 			},
-			Spec: appsv1.DeploymentSpec{Replicas: ptr(int32(0))},
+			Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(0))},
 		}
 	}
 
@@ -4031,7 +4032,7 @@ func TestReconcile_WarmupWaitsForEveryWorkload(t *testing.T) {
 				ArgoCD:    &lightsoutv1alpha1.ArgoCDConfig{Namespace: "argocd"},
 				// One workload per pass, so the first pass leaves the second one down.
 				UpscaleRateLimit: &lightsoutv1alpha1.RateLimitConfig{
-					BatchSize:           ptr(1),
+					BatchSize:           ptr.To(1),
 					DelayBetweenBatches: &metav1.Duration{Duration: 10 * time.Second},
 				},
 			},
